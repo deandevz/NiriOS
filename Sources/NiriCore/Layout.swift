@@ -4,7 +4,7 @@ public typealias WindowID = UInt32
 
 /// Quando a viewport rola pra centralizar a coluna focada (mesmos nomes do niri).
 public enum CenterMode: String {
-    /// Sempre no centro.
+    /// Sempre no centro, menos nas pontas da fita, que encostam na borda da tela.
     case always
     /// Rola o mínimo pra coluna caber inteira.
     case never
@@ -244,8 +244,13 @@ public struct Layout {
             } else if colX + colW > v + viewW {
                 v = colX + colW - viewW
             }
-            // Sem espaço vazio sobrando nas pontas da fita.
-            v = max(0, min(v, max(0, total - viewW)))
+        }
+        // Sem espaço vazio nas pontas da fita: centralizar a 1ª ou a última coluna deixaria papel de
+        // parede do lado. Se a fita inteira cabe na tela, ela fica no centro (no `never`, à esquerda).
+        if total > viewW {
+            v = max(0, min(v, total - viewW))
+        } else {
+            v = config.centerFocusedColumn == .never ? 0 : (total - viewW) / 2
         }
         view.retarget(v.rounded(), at: t)
     }

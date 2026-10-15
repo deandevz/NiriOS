@@ -159,6 +159,32 @@ func gapIsExactInEveryFrame(center: CenterMode) {
     #expect(abs((f[1].rect.minX - area.minX) - (area.maxX - f[1].rect.maxX)) <= 1)
 }
 
+/// Centralizar a 1ª ou a última coluna deixaria papel de parede do lado: nas pontas a fita encosta
+/// na borda da tela, inclusive ao encolher a coluna da ponta.
+@Test(arguments: [CenterMode.always, .onOverflow])
+func endsOfStripTouchScreenEdges(center: CenterMode) {
+    var l = makeLayout(3, proportion: 1, center: center)
+    #expect(settle(&l)[0].rect.minX == 12)
+    l.resizeFocused(by: -0.5, at: 0)
+    var f = settle(&l)
+    #expect(f[0].rect.minX == 12)
+    #expect(f[1].rect.minX - f[0].rect.maxX == 12)
+    _ = l.focusNeighbor(2, at: 0)
+    l.resizeFocused(by: -0.5, at: 0)
+    f = settle(&l)
+    #expect(f[2].rect.maxX == 1716)
+    #expect(f[2].rect.minX - f[1].rect.maxX == 12)
+}
+
+/// Se a fita inteira cabe na tela, ela fica no centro e trocar o foco não rola nada.
+@Test func stripThatFitsStaysCentered() {
+    var l = makeLayout(2, proportion: 0.3, center: .always)
+    let f = settle(&l)
+    #expect(abs((f[0].rect.minX + f[1].rect.maxX) / 2 - area.midX) <= 1)
+    _ = l.focusNeighbor(1, at: 0)
+    #expect(settle(&l).map(\.rect) == f.map(\.rect))
+}
+
 @Test func shrinkStopsAtAppMinimumWidth() {
     var l = makeLayout(2, center: .always)
     l.setMinWidth(1, 700, at: 0)
