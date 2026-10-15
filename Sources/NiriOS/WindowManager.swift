@@ -573,7 +573,7 @@ final class WindowManager: NSObject {
         resize(&layout, action, at: now)
         guard let ghost, let id, let t = tracked[id], let to = finalFrame(id), to.size != before?.size,
               let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
-        ghost.show(id, at: r)
+        ghost.show(id, of: t.pid, at: r)
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
         workers[t.pid]?.park(id, at: CGPoint(x: layout.bounds.maxX - layout.config.sliver, y: r.minY),

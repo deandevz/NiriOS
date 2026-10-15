@@ -49,17 +49,28 @@ final class GhostOverlay {
         CGRect(x: r.minX, y: screenHeight - r.maxY, width: r.width, height: r.height)
     }
 
-    /// Vidro no lugar da janela. Se ele estava sumindo (outra tecla logo depois), volta inteiro.
-    func show(_ id: CGWindowID, at r: CGRect) {
-        let v = glass[id] ?? makeGlass()
+    /// Vidro no lugar da janela, com o ícone do app no meio. Se ele estava sumindo (outra tecla logo
+    /// depois), volta inteiro.
+    func show(_ id: CGWindowID, of pid: pid_t, at r: CGRect) {
+        let v = glass[id] ?? makeGlass(flip(r), icon: NSRunningApplication(processIdentifier: pid)?.icon)
         glass[id] = v
         v.layer?.removeAllAnimations()
         v.alphaValue = 1
         v.frame = flip(r)
     }
 
-    private func makeGlass() -> NSVisualEffectView {
-        let v = NSVisualEffectView()
+    private func makeGlass(_ frame: CGRect, icon: NSImage?) -> NSVisualEffectView {
+        let v = NSVisualEffectView(frame: frame)
+        if let icon {
+            // Margens elásticas iguais: o AppKit divide a mudança de tamanho entre elas e o ícone fica
+            // no meio a cada frame, sem código nosso por tick.
+            let s = 96.0
+            let i = NSImageView(frame: CGRect(x: (frame.width - s) / 2, y: (frame.height - s) / 2, width: s, height: s))
+            i.image = icon
+            i.imageScaling = .scaleProportionallyUpOrDown
+            i.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            v.addSubview(i)
+        }
         v.material = .hudWindow  // o mesmo desfoque da prévia do Loop
         v.blendingMode = .behindWindow
         v.state = .active

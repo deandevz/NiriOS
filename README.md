@@ -119,6 +119,8 @@ Ideia da prévia do Loop (MrKai77/Loop): em vez de fotografar, um vidro fosco no
 
 Primeira versão saía com tempo fixo (100 ms de espera + fade de 200 ms): o usuário achou a saída brusca, dava pra ver a página do Arc se reorganizando e o texto do WezTerm refluindo durante o fade. Com a espera pela captura, num painel de teste que pisca por 300 ms depois de cada resize, o vidro esperou 369 e 380 ms.
 
+Ícone do app no meio do vidro (96 pt, `NSRunningApplication.icon` num `NSImageView` com margens elásticas: o AppKit recentraliza quando o vidro muda de tamanho, sem código por frame). Sai junto com o vidro no fade. A/B nos painéis de teste, 8 resizes, 2 rodadas cada: pico de 15 MB contra 14 MB sem ícone, CPU e maior intervalo entre frames iguais (~16 ms).
+
 Primeira medição (2026-10-15, painéis de teste, 5 resizes seguidos): maior intervalo entre frames de 8,4 a 16,9 ms, CPU ~2,5% durante a animação (as fotos: 27 a 40%), memória 10 MB com pico de 10 MB (as fotos: 13 MB parado e ~28 MB de pico). Começa a mexer na hora da tecla, sem esperar o app. Avaliação do usuário nos apps reais: "melhorou demais, esse é o caminho"; virou o padrão no lugar das fotos.
 
 ## Testar sem mexer nas suas janelas
