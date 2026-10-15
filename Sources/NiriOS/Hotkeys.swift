@@ -28,7 +28,8 @@ final class HotkeyTap {
     ]
 
     private let handler: (Action) -> Void
-    /// Option apertado sozinho / solto: a transição do resize fotografa antes da tecla chegar.
+    /// Option apertado sozinho / solto: a transição do resize fotografa antes da tecla chegar, e o
+    /// resize fantasma só devolve a janela quando ele sobe.
     var onOption: ((Bool) -> Void)?
     private var optionDown = false
     private let verbose: Bool
@@ -70,6 +71,11 @@ final class HotkeyTap {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let port { CGEvent.tapEnable(tap: port, enable: true) }
             log("tap de teclado reativado (\(type == .tapDisabledByTimeout ? "timeout" : "input"))")
+            // O Option pode ter subido com o tap desligado: sem isso a janela do resize fantasma ficaria escondida.
+            if optionDown, let onOption {
+                optionDown = false
+                DispatchQueue.main.async { onOption(false) }
+            }
             return Unmanaged.passUnretained(event)
         }
         let mods = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl])

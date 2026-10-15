@@ -35,7 +35,7 @@ final class WindowManager: NSObject {
     private var maxTickGap = 0.0
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
-        if transition != nil { tap.onOption = { [weak self] down in self?.prefetchPhotos(down) } }
+        tap.onOption = { [weak self] down in self?.optionChanged(down) }
         return tap
     }()
 
@@ -376,8 +376,13 @@ final class WindowManager: NSObject {
     private var layoutVersion = 0
     private var optionHeld = false
 
+    private func optionChanged(_ down: Bool) {
+        optionHeld = down
+        if transition != nil { prefetchPhotos(down) }
+        if !down { returnGhosts() }  // ver `step`
+    }
+
     private func prefetchPhotos(_ optionDown: Bool) {
-        optionHeld = optionDown
         prefetchVersion += 1
         guard optionDown, global == nil, link?.isPaused == true, let below = transition?.windowID else { prefetched = nil; return }
         let ticket = prefetchVersion, version = layoutVersion
@@ -597,7 +602,10 @@ final class WindowManager: NSObject {
             }
             w.attach(id, at: r) {
                 self.whenDrawn(id, width: r.width) {
-                    if !self.ghosted.contains(id) { self.ghost?.fadeOut(id) }  // senão outra tecla escondeu de novo
+                    // Alguns apps ainda se reorganizam depois de 50 ms parados, e isso aparecia no fade.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + GhostOverlay.hold) {
+                        if !self.ghosted.contains(id) { self.ghost?.fadeOut(id) }  // senão outra tecla escondeu de novo
+                    }
                 }
             }
         }
@@ -702,19 +710,40 @@ final class WindowManager: NSObject {
 
         if settled {
             link?.isPaused = true
-            let unghosting = !ghosted.isEmpty
-            if unghosting { finishGhosts(frames) }
+            // A janela escondida pelo vidro volta com o Option solto, ou com ele seguro e nenhuma tecla por
+            // `optionIdle`: apertando +/- várias vezes, a fita parava entre uma tecla e outra e a página
+            // aparecia pelo vidro até a tecla seguinte. Segurado só se o tap e o estado do teclado
+            // concordam: na dúvida, volta.
+            let held = optionHeld && CGEventSource.flagsState(.hidSystemState).contains(.maskAlternate)
+            if ghosted.isEmpty {
+                verifyPlacement(after: 0.15)  // o app teve tempo de aplicar (Electron é assíncrono)
+            } else if !held {
+                returnGhosts()
+            } else {
+                let version = layoutVersion  // outra tecla nesse meio tempo cancela
+                DispatchQueue.main.asyncAfter(deadline: .now() + GhostOverlay.optionIdle) { [weak self] in
+                    if self?.layoutVersion == version { self?.returnGhosts() }
+                }
+            }
             if let id = deferredFocus { requestFocus(id) }
             if verbose { report(duration: now - animationStart, ticks: ticks, maxTickGap: maxTickGap) }
-            // Espera o app terminar de aplicar (Electron é assíncrono) e confere. Depois do fantasma, só com
-            // o vidro já fora: a janela acabou de mudar de tamanho de uma vez, e uma leitura cedo veria o
-            // tamanho velho e mandaria o resize de novo no meio do redesenho.
-            let wait = unghosting ? 0.15 + GhostOverlay.maxWait + GhostOverlay.fade : 0.15
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                guard let self, self.link?.isPaused == true else { return }
-                for w in self.workers.values {
-                    w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
-                }
+        }
+    }
+
+    /// Fita parada: as janelas escondidas pelo vidro voltam. A conferência espera o vidro sair: a janela
+    /// acabou de mudar de tamanho de uma vez, e uma leitura cedo veria o tamanho velho e mandaria o
+    /// resize de novo no meio do redesenho.
+    private func returnGhosts() {
+        guard !ghosted.isEmpty, link?.isPaused == true else { return }
+        finishGhosts(layout.frames(at: CACurrentMediaTime()))
+        verifyPlacement(after: 0.15 + GhostOverlay.maxWait + GhostOverlay.hold + GhostOverlay.fade)
+    }
+
+    private func verifyPlacement(after wait: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self, self.link?.isPaused == true else { return }
+            for w in self.workers.values {
+                w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
             }
         }
     }

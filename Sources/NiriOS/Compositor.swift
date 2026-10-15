@@ -32,8 +32,12 @@ private func overlayPanel(_ screen: NSScreen) -> NSPanel {
 /// `SLSSetWindowAlpha` em janela de outro app não tem efeito (README, SkyLight).
 final class GhostOverlay {
     /// Depois que a janela volta: espera máxima pelo app terminar de desenhar (vídeo tocando nunca
-    /// termina) e duração do fade (s). Com 0,2 s e começo rápido, o fade parecia um corte.
-    static let maxWait = 0.6, fade = 0.35
+    /// termina), vidro parado depois que ele terminou e duração do fade (s). Com 0,2 s e começo rápido,
+    /// o fade parecia um corte.
+    static let maxWait = 0.6, hold = 0.15, fade = 0.35
+    /// Fita parada com o Option seguro e nenhuma tecla: a janela volta mesmo assim depois desse tempo (s).
+    /// Apertando +/- várias vezes, a tecla seguinte veio 320 a 370 ms depois de a fita parar.
+    static let optionIdle = 0.5
     private let window: NSPanel
     private let screenHeight: Double
     private var glass: [CGWindowID: NSVisualEffectView] = [:]
