@@ -2,7 +2,8 @@ import AppKit
 import QuartzCore
 
 /// Transição do resize: durante a animação, a área das janelas vira nossa, como num compositor.
-/// Papel de parede + foto de cada janela visível, cada uma no lugar que a fita manda a cada frame.
+/// Fundo (a tela sem as janelas que animam) + foto de cada janela visível, cada uma no lugar que a
+/// fita manda a cada frame.
 /// Por baixo, as janelas reais já foram pro lugar final, na tela, uma vez só: nenhum app precisa
 /// acompanhar a animação (o WhatsApp leva ~150 ms por resize; Chromium desenha depois), então
 /// serve pra qualquer app.
@@ -18,42 +19,55 @@ final class TransitionOverlay {
     /// Tudo fica nessa camada, não na raiz da view: a raiz de view do AppKit ignora animação implícita
     /// (o fade de saída acontecia num frame só).
     private let root = CALayer()
-    private let wallpaper = CALayer()
-    /// Desfoque atrás de janela translúcida, calibrado comparando frames com o WezTerm
-    /// (`macos_window_background_blur = 28`): 30 bate; 60 e 100 ficam lisos demais.
-    private let blurRadius = 30.0
+    private let background = CALayer()
     private let screenHeight: Double
     private let scale: Double
 
     /// Uma janela desenhada por nós. A foto já vem com o canto arredondado do macOS. A sombra é uma
     /// camada à parte, cortada pra existir só do lado de fora (como no macOS): calculada pelo contorno
     /// da foto, ela escurecia o fundo de janela translúcida por dentro e o WezTerm ficava cinza.
+    /// Dentro de `old`, por cima da foto inteira, duas partes tiradas da tela (`Private.captureShown`,
+    /// a única captura com o fundo translúcido certo): `ahead`, a que vai estar na tela no fim, e por
+    /// cima dela `shown`, a que estava na tela no começo.
     private final class Tile {
         let box = CALayer(), shadow = CALayer(), shadowMask = CAShapeLayer()
-        let clip = CALayer(), blur = CALayer(), old = CALayer(), live = CALayer()
+        let clip = CALayer(), gap = CALayer(), old = CALayer(), ahead = CALayer(), shown = CALayer(), live = CALayer()
         var radius = 27.0
         var liveShown = false
+        /// Largura (pt) da imagem que está aparecendo: à direita dela, até a borda, vai a sobra (`gap`).
+        var shownWidth = 0.0
     }
     private var tiles: [CGWindowID: Tile] = [:]
+
+    /// A nossa janela no WindowServer.
+    var windowID: CGWindowID { CGWindowID(window.windowNumber) }
 
     init(screen: NSScreen) {
         screenHeight = screen.frame.height
         scale = screen.backingScaleFactor
-        window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        // Painel que não ativa o app: com NSWindow comum o macOS ativava o niri-os ao abrir (roubava o
+        // foco do teclado e o foco inicial da fita caía na 1ª coluna).
+        let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
+        window = panel
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
         window.ignoresMouseEvents = true
+        // 99% opaca: janela totalmente opaca conta como "cobrindo" pro macOS, e app coberto para de
+        // desenhar (WezTerm, Chromium). Aí a janela real redimensionava por baixo sem redesenhar, as
+        // fotos ao vivo pegavam a imagem velha esticada e o fade de saída mostrava ela borrada.
+        window.alphaValue = 0.99
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         let view = window.contentView!
         view.wantsLayer = true
-        view.layerUsesCoreImageFilters = true  // desfoque atrás de janela translúcida
         root.frame = CGRect(origin: .zero, size: screen.frame.size)
         view.layer!.addSublayer(root)
-        wallpaper.contentsGravity = .resize
-        wallpaper.frame = CGRect(origin: .zero, size: screen.frame.size)
-        root.addSublayer(wallpaper)
+        background.contentsGravity = .resize
+        background.frame = CGRect(origin: .zero, size: screen.frame.size)
+        root.addSublayer(background)
         root.isHidden = true
         // Fica sempre na tela, vazia: esconder (orderOut) e mostrar de novo logo depois fazia a foto
         // aparecer ~170 ms atrasada.
@@ -71,11 +85,23 @@ final class TransitionOverlay {
         CATransaction.commit()
     }
 
-    /// Mostra a tela como ela está: papel de parede e as janelas, na ordem dada (a última fica em cima).
-    func show(wallpaper image: CGImage?, windows: [(id: CGWindowID, photo: CGImage, frame: CGRect, active: Bool)]) {
+    /// Foto de uma janela: ela inteira (vale pra parte que entra na tela durante a animação) e a parte
+    /// que está na tela (`area`), como o WindowServer mostra.
+    typealias Photo = (full: CGImage, shown: CGImage?, area: CGRect)
+
+    /// ~10 a 15 ms da foto inteira + 10 a 20 ms da parte na tela. `frame` é onde a janela está agora.
+    static func photo(_ id: CGWindowID, at frame: CGRect, screen: CGRect) -> Photo? {
+        guard let full = Private.capture(id) else { return nil }
+        let area = frame.intersection(screen)
+        return (full, area.width >= 1 ? Private.captureShown(id, in: area) : nil, area)
+    }
+
+    /// Mostra a tela como ela está: o fundo e as janelas, na ordem dada (a última fica em cima).
+    func show(background image: CGImage?, windows: [(id: CGWindowID, photo: Photo, frame: CGRect, active: Bool)]) {
         transaction {
-            wallpaper.contents = image
-            for (id, photo, frame, active) in windows {
+            background.contents = image
+            for (id, p, frame, active) in windows {
+                let photo = p.full
                 let t = Tile()
                 t.shadow.shadowOpacity = active ? 0.5 : 0.32
                 t.shadow.shadowRadius = active ? 30 : 16
@@ -88,11 +114,11 @@ final class TransitionOverlay {
                 t.clip.masksToBounds = true
                 t.old.contents = photo
                 t.live.opacity = 0
-                if Self.isTranslucent(photo) {
-                    // O desfoque do fundo é o WindowServer que faz atrás da janela real; aqui é a gente.
-                    t.blur.backgroundFilters = [CIFilter(name: "CIGaussianBlur", parameters: ["inputRadius": blurRadius])!]
-                    t.clip.addSublayer(t.blur)
-                }
+                t.shownWidth = Double(photo.width) / scale
+                t.old.addSublayer(t.ahead)
+                t.old.addSublayer(t.shown)
+                if let shown = p.shown { put(t.shown, shown, area: p.area, frame: frame) }
+                t.clip.addSublayer(t.gap)
                 t.clip.addSublayer(t.old)
                 t.clip.addSublayer(t.live)
                 t.box.addSublayer(t.clip)
@@ -117,9 +143,35 @@ final class TransitionOverlay {
         t.shadowMask.path = hole
         t.clip.frame = b
         t.clip.cornerRadius = t.radius  // o recorte precisa do canto da janela no tamanho atual
-        t.blur.frame = b
+        t.gap.frame = CGRect(x: t.shownWidth, y: 0, width: max(0, b.width - t.shownWidth), height: b.height)
         t.old.frame = b
         t.live.frame = b
+    }
+
+    /// A parte `area` da janela em `frame`, presa à esquerda como a foto (origem da camada embaixo).
+    private func put(_ l: CALayer, _ img: CGImage, area: CGRect, frame: CGRect) {
+        l.contents = img
+        l.frame = CGRect(x: area.minX - frame.minX, y: frame.maxY - area.maxY, width: area.width, height: area.height)
+    }
+
+    /// Vizinha já no lugar final, por baixo de nós: a parte dela que vai estar na tela no fim. O que
+    /// entra na tela durante a animação vinha da foto inteira, com o fundo cinza, e piscava no fim.
+    func setAhead(_ id: CGWindowID, _ img: CGImage, area: CGRect, frame: CGRect) {
+        guard let t = tiles[id] else { return }
+        transaction { put(t.ahead, img, area: area, frame: frame) }
+    }
+
+    /// Fim da transição, antes do fade: a parte na tela de cada janela parada, tirada de novo no lugar
+    /// final. A vizinha que deslizou pra dentro trazia da foto inteira o fundo cinza da parte que
+    /// estava fora da tela.
+    func setShown(_ photos: [CGWindowID: (img: CGImage, area: CGRect, frame: CGRect)]) {
+        transaction {
+            for (id, p) in photos {
+                guard let t = tiles[id] else { continue }
+                // A que mudou de tamanho já está mostrando a imagem ao vivo, não a foto velha.
+                if t.liveShown, p.area == p.frame { t.live.contents = p.img } else { put(t.shown, p.img, area: p.area, frame: p.frame) }
+            }
+        }
     }
 
     /// A cada frame: onde cada janela está. A janela que muda de tamanho troca pro layout novo uma
@@ -132,6 +184,7 @@ final class TransitionOverlay {
         }
         guard let t = tiles[morph], t.live.contents != nil, !t.liveShown else { return }
         t.liveShown = true
+        if let img = t.live.contents { t.shownWidth = Double((img as! CGImage).width) / scale }
         Self.fade(t.live, to: 1, 0.05) { Self.fade(t.old, to: 0, 0) }
     }
 
@@ -153,14 +206,21 @@ final class TransitionOverlay {
     }
 
     /// Foto mais recente da janela que muda de tamanho (ela está no lugar final, por baixo de nós).
-    /// O fundo do recorte vira a cor da borda direita dela: é o que aparece na sobra quando a imagem
-    /// nova é mais estreita que o espaço (encolhendo).
+    /// A sobra (quando a imagem nova é mais estreita que o espaço, encolhendo) ganha a cor da borda
+    /// direita dela.
     func setLive(_ id: CGWindowID, _ photo: CGImage) {
+        guard let t = tiles[id] else { return }
         let edge = Self.edgeColor(photo)
         transaction {
-            tiles[id]?.live.contents = photo
-            if let edge { tiles[id]?.clip.backgroundColor = edge }
+            t.live.contents = photo
+            t.gap.backgroundColor = edge
         }
+    }
+
+    /// A imagem ao vivo que está aparecendo, se já entrou (pro log).
+    func liveImage(_ id: CGWindowID) -> CGImage? {
+        guard let t = tiles[id], t.liveShown, let c = t.live.contents else { return nil }
+        return (c as! CGImage)
     }
 
     /// Cor média de uma faixa de 4 px na borda direita, no meio da altura.
@@ -176,8 +236,8 @@ final class TransitionOverlay {
         return CGColor(srgbRed: Double(px[0]) / 255 / a, green: Double(px[1]) / 255 / a, blue: Double(px[2]) / 255 / a, alpha: a)
     }
 
-    /// Some com fade de 150 ms, já parado. A imagem bate com o app real, então o fade só suaviza o que
-    /// não bate (como o efeito translúcido da barra lateral). Depois solta as fotos (dezenas de MB cada).
+    /// Some com fade de 150 ms, já parado. A parte visível acabou de ser tirada da tela (`setShown`),
+    /// então o fade só suaviza o que mudou no último instante. Depois solta as fotos (dezenas de MB cada).
     func hide(done: @escaping () -> Void) {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.15)
@@ -186,7 +246,7 @@ final class TransitionOverlay {
             transaction {
                 root.isHidden = true
                 root.opacity = 1
-                wallpaper.contents = nil
+                background.contents = nil
                 for t in tiles.values { t.box.removeFromSuperlayer() }
             }
             tiles = [:]
@@ -215,18 +275,6 @@ final class TransitionOverlay {
         return 27
     }
 
-    /// Janela com fundo translúcido (WezTerm 0,94): alfa abaixo de 250 num recorte de 8x8 do meio.
-    /// Só o recorte: desenhar a foto inteira (~28 MB) numa miniatura custava ~10 ms por janela.
-    private static func isTranslucent(_ img: CGImage) -> Bool {
-        var px = [UInt8](repeating: 0, count: 8 * 8 * 4)
-        guard let ctx = CGContext(data: &px, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let mid = img.cropping(to: CGRect(x: img.width / 2, y: img.height / 2, width: 8, height: 8)) else { return false }
-        ctx.draw(mid, in: CGRect(x: 0, y: 0, width: 8, height: 8))
-        return stride(from: 3, to: px.count, by: 4).contains { px[$0] < 250 }
-    }
-
     /// Miniatura 48x30 em cinza, pra saber se duas capturas são iguais (o app parou de desenhar).
     static func signature(_ img: CGImage) -> [UInt8] {
         var px = [UInt8](repeating: 0, count: 48 * 30)
@@ -237,18 +285,19 @@ final class TransitionOverlay {
         return px
     }
 
-    /// Média de diferença abaixo de 1 em 255: cursor piscando passa, redesenho no meio não.
-    static func same(_ a: [UInt8], _ b: [UInt8]) -> Bool {
-        a.count == b.count && zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) } < a.count
+    /// Diferença média entre duas miniaturas, em 255.
+    static func difference(_ a: [UInt8], _ b: [UInt8]) -> Double {
+        a.count == b.count ? Double(zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }) / Double(a.count) : 255
     }
 
-    /// Foto do papel de parede (a janela "Wallpaper" do Dock), ~7 ms.
-    static func captureWallpaper() -> CGImage? {
-        let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
-        let wall = list.first {
-            ($0[kCGWindowOwnerName as String] as? String) == "Dock"
-                && (($0[kCGWindowName as String] as? String) ?? "").hasPrefix("Wallpaper")
-        }
-        return (wall?[kCGWindowNumber as String] as? CGWindowID).flatMap(Private.capture)
+    /// Média de diferença abaixo de 1 em 255: cursor piscando passa, redesenho no meio não.
+    static func same(_ a: [UInt8], _ b: [UInt8]) -> Bool { difference(a, b) < 1 }
+
+    /// O fundo como está na tela, sem as janelas que nós desenhamos (`drawn`): papel de parede, mesa e
+    /// as janelas estacionadas na borda, com a sombra delas. Só com o papel de parede, as bordas da
+    /// tela clareavam de 28 pra 70 (em 255) quando a camada entrava. ~15 a 25 ms.
+    static func captureBackground(below overlay: CGWindowID, drawn: Set<CGWindowID>, in rect: CGRect) -> CGImage? {
+        let list = (CGWindowListCopyWindowInfo(.optionOnScreenBelowWindow, overlay) as? [[String: Any]]) ?? []
+        return Private.captureShown(list.compactMap { $0[kCGWindowNumber as String] as? CGWindowID }.filter { !drawn.contains($0) }, in: rect)
     }
 }

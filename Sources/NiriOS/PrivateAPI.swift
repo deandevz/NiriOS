@@ -40,6 +40,31 @@ enum Private {
         return (list as? [CGImage])?.first
     }
 
+    private typealias ListImageFn = @convention(c) (CGRect, UInt32, CGWindowID, UInt32) -> Unmanaged<CGImage>?
+    /// Saiu do SDK no macOS 15 (a Apple empurra a ScreenCaptureKit), mas continua no sistema.
+    private static let listImage = symbol("CGWindowListCreateImage", in: defaultHandle, as: ListImageFn.self)
+
+    /// `rect` da tela como o WindowServer mostra, só com a janela e o que está abaixo dela (sem a nossa
+    /// camada nem a sombra das janelas de cima). Janela com desfoque de fundo (WezTerm, barra lateral
+    /// do Arc) só sai certa aqui: em `capture`, com qualquer uma das 32 opções, e também na
+    /// ScreenCaptureKit, a parte translúcida vem sobre cinza 192 em vez do papel de parede.
+    /// Medido: igual à tela pixel a pixel, 10 a 20 ms por coluna.
+    static func captureShown(_ window: CGWindowID, in rect: CGRect) -> CGImage? {
+        // kCGWindowListOptionOnScreenBelowWindow | kCGWindowListOptionIncludingWindow
+        listImage?(rect, 4 | 8, window, 0)?.takeRetainedValue()
+    }
+
+    private typealias ArrayImageFn = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
+    private static let arrayImage = symbol("CGWindowListCreateImageFromArray", in: defaultHandle, as: ArrayImageFn.self)
+
+    /// `rect` da tela composto só com `windows` (da frente pra trás), como o WindowServer mostra.
+    static func captureShown(_ windows: [CGWindowID], in rect: CGRect) -> CGImage? {
+        // A lista guarda o número da janela no lugar do ponteiro, não CFNumber.
+        var items = windows.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        guard let arrayImage, let list = CFArrayCreate(nil, &items, items.count, nil) else { return nil }
+        return arrayImage(rect, list, 0)?.takeRetainedValue()
+    }
+
     /// ID da janela no WindowServer a partir do elemento AX.
     static func windowID(of element: AXUIElement) -> CGWindowID? {
         var id: CGWindowID = 0
