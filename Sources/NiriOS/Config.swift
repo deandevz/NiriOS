@@ -4,6 +4,8 @@ import NiriCore
 /// Lido de ~/.config/niri-os/config.json. Toda chave é opcional; o que faltar usa o padrão.
 ///
 ///     { "gap": 12, "topPadding": 0, "defaultColumnWidth": 0.5, "widthStep": 0.1, "stiffness": 800 }
+enum ResizeStyle: String { case photos, ghost, live }
+
 struct Config {
     /// Espaço entre janelas e entre janela e borda da tela (pt).
     var gap: Double = 12
@@ -17,8 +19,10 @@ struct Config {
     /// Larguras do Option+/- (como no niri). Lista vazia = passo de `widthStep`. Passos maiores são
     /// menos transições, e cada uma é onde um app pode mostrar defeito.
     var widthPresets: [Double] = [1.0 / 3, 0.5, 2.0 / 3, 1]
-    /// Resize animado com fotos das janelas (ver TransitionOverlay). Precisa de Gravação de Tela.
-    var photoTransitions = true
+    /// Como o Option+/- anima. "ghost": vidro fosco no lugar da janela, que volta pronta no fim (ver
+    /// GhostOverlay). "photos": fotos das janelas (ver TransitionOverlay; precisa de Gravação de Tela).
+    /// "live": as janelas reais, frame a frame.
+    var resizeStyle: ResizeStyle = .ghost
     /// Rigidez da mola. Maior = animação mais rápida. 800 é o padrão do niri.
     var stiffness: Double = 800
     /// Tempo máximo esperando um app responder uma chamada de Acessibilidade (s).
@@ -43,13 +47,15 @@ struct Config {
         if let v = num("defaultColumnWidth") { c.defaultColumnWidth = v }
         if let v = num("widthStep") { c.widthStep = v }
         if let v = obj["widthPresets"] as? [NSNumber] { c.widthPresets = v.map(\.doubleValue) }
-        if let v = obj["photoTransitions"] as? Bool { c.photoTransitions = v }
+        if let s = obj["resizeStyle"] as? String {
+            if let m = ResizeStyle(rawValue: s) { c.resizeStyle = m } else { log("config: resizeStyle '\(s)' inválido") }
+        }
         if let v = num("stiffness") { c.stiffness = v }
         if let v = num("axTimeout") { c.axTimeout = v }
         if let s = obj["centerFocusedColumn"] as? String {
             if let m = CenterMode(rawValue: s) { c.centerFocusedColumn = m } else { log("config: centerFocusedColumn '\(s)' inválido") }
         }
-        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "photoTransitions", "stiffness", "axTimeout",
+        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "resizeStyle", "stiffness", "axTimeout",
                           "centerFocusedColumn"]
         for key in obj.keys where !known.contains(key) { log("config: chave desconhecida '\(key)'") }
         log("config carregada de \(path.path)")

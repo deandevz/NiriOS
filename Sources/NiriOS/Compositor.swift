@@ -1,5 +1,96 @@
 import AppKit
+import NiriCore
 import QuartzCore
+
+/// Janela nossa por cima das outras, na tela toda, transparente, sem clique e sem foco.
+private func overlayPanel(_ screen: NSScreen) -> NSPanel {
+    // Painel que não ativa o app: com NSWindow comum o macOS ativava o niri-os ao abrir (roubava o
+    // foco do teclado e o foco inicial da fita caía na 1ª coluna).
+    let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.becomesKeyOnlyIfNeeded = true
+    panel.hidesOnDeactivate = false
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.hasShadow = false
+    panel.ignoresMouseEvents = true
+    // 99% opaca: janela totalmente opaca conta como "cobrindo" pro macOS, e app coberto para de
+    // desenhar (WezTerm, Chromium). Aí a janela real redimensionava por baixo sem redesenhar, as
+    // fotos ao vivo pegavam a imagem velha esticada e o fade de saída mostrava ela borrada.
+    panel.alphaValue = 0.99
+    panel.level = .floating
+    panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+    panel.contentView!.wantsLayer = true
+    return panel
+}
+
+/// Resize fantasma (experimento, `"resizeStyle": "ghost"`), como a prévia do Loop: no lugar da janela
+/// que muda de tamanho anda um vidro fosco nosso, e a janela real espera fora da tela. Quando a fita
+/// para, ela volta já no tamanho final, por baixo do vidro, e o vidro some devagar por cima dela quando o
+/// app termina de redesenhar. Nenhuma foto aparece na tela (as capturas só dizem quando o app terminou),
+/// e o app redesenha escondido (piscada, sombra e imagem velha do WezTerm ficam atrás do vidro).
+/// A própria janela não dá pra deixar transparente:
+/// `SLSSetWindowAlpha` em janela de outro app não tem efeito (README, SkyLight).
+final class GhostOverlay {
+    /// Depois que a janela volta: espera máxima pelo app terminar de desenhar (vídeo tocando nunca
+    /// termina) e duração do fade (s). Com 0,2 s e começo rápido, o fade parecia um corte.
+    static let maxWait = 0.6, fade = 0.35
+    private let window: NSPanel
+    private let screenHeight: Double
+    private var glass: [CGWindowID: NSVisualEffectView] = [:]
+
+    init(screen: NSScreen) {
+        screenHeight = screen.frame.height
+        window = overlayPanel(screen)
+        // Fica sempre na tela, vazia, como a TransitionOverlay: mostrar na hora da tecla atrasava.
+        window.orderFrontRegardless()
+    }
+
+    private func flip(_ r: CGRect) -> CGRect {
+        CGRect(x: r.minX, y: screenHeight - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// Vidro no lugar da janela. Se ele estava sumindo (outra tecla logo depois), volta inteiro.
+    func show(_ id: CGWindowID, at r: CGRect) {
+        let v = glass[id] ?? makeGlass()
+        glass[id] = v
+        v.layer?.removeAllAnimations()
+        v.alphaValue = 1
+        v.frame = flip(r)
+    }
+
+    private func makeGlass() -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .hudWindow  // o mesmo desfoque da prévia do Loop
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 16  // canto das janelas no macOS 26 (o Loop usa o mesmo)
+        v.layer?.masksToBounds = true
+        v.layer?.borderWidth = 3
+        v.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        window.contentView!.addSubview(v)
+        return v
+    }
+
+    /// A cada frame: o vidro segue a janela dele na fita.
+    func update(_ frames: [WindowFrame]) {
+        guard !glass.isEmpty else { return }
+        for f in frames { glass[f.window]?.frame = flip(f.rect) }
+    }
+
+    func fadeOut(_ id: CGWindowID) {
+        guard let v = glass[id] else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = Self.fade
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            v.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, v.alphaValue == 0, glass[id] === v else { return }  // voltou no meio do fade
+            v.removeFromSuperview()
+            glass[id] = nil
+        })
+    }
+}
 
 /// Transição do resize: durante a animação, a área das janelas vira nossa, como num compositor.
 /// Fundo (a tela sem as janelas que animam) + foto de cada janela visível, cada uma no lugar que a
@@ -45,26 +136,9 @@ final class TransitionOverlay {
     init(screen: NSScreen) {
         screenHeight = screen.frame.height
         scale = screen.backingScaleFactor
-        // Painel que não ativa o app: com NSWindow comum o macOS ativava o niri-os ao abrir (roubava o
-        // foco do teclado e o foco inicial da fita caía na 1ª coluna).
-        let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.hidesOnDeactivate = false
-        window = panel
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
-        // 99% opaca: janela totalmente opaca conta como "cobrindo" pro macOS, e app coberto para de
-        // desenhar (WezTerm, Chromium). Aí a janela real redimensionava por baixo sem redesenhar, as
-        // fotos ao vivo pegavam a imagem velha esticada e o fade de saída mostrava ela borrada.
-        window.alphaValue = 0.99
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        let view = window.contentView!
-        view.wantsLayer = true
+        window = overlayPanel(screen)
         root.frame = CGRect(origin: .zero, size: screen.frame.size)
-        view.layer!.addSublayer(root)
+        window.contentView!.layer!.addSublayer(root)
         background.contentsGravity = .resize
         background.frame = CGRect(origin: .zero, size: screen.frame.size)
         root.addSublayer(background)

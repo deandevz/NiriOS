@@ -21,10 +21,10 @@ Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais):
 
 ```json
 { "gap": 12, "topPadding": 0, "bottomPadding": 0, "defaultColumnWidth": 0.5,
-  "widthPresets": [0.333, 0.5, 0.667, 1], "photoTransitions": true, "stiffness": 800 }
+  "widthPresets": [0.333, 0.5, 0.667, 1], "resizeStyle": "ghost", "stiffness": 800 }
 ```
 
-`topPadding` serve pra SketchyBar. `stiffness` maior = animação mais rápida (800 ≈ 0,35 s, igual ao niri). `widthPresets: []` volta pro passo fixo de `widthStep` (padrão 0.1). `photoTransitions` é a transição do resize por fotos (abaixo); precisa da permissão de Gravação de Tela pro terminal, e sem ela o resize anima as janelas reais direto.
+`topPadding` serve pra SketchyBar. `stiffness` maior = animação mais rápida (800 ≈ 0,35 s, igual ao niri). `widthPresets: []` volta pro passo fixo de `widthStep` (padrão 0.1). `resizeStyle` é como o `Option +/-` anima: `ghost` (padrão, vidro fosco no lugar da janela, abaixo), `photos` (fotos das janelas, abaixo; precisa da permissão de Gravação de Tela pro terminal, e sem ela vira `live`) ou `live` (as janelas reais, frame a frame).
 
 ## Como funciona
 
@@ -87,7 +87,7 @@ Testado numa janela do WezTerm, conferindo pelo WindowServer (camada na lista de
 
 Ou seja: dá pra fotografar qualquer janela, mas não dá pra esconder, mover ou transformar janela alheia fora do AX. Código de retorno 0 não prova nada.
 
-### Transição do resize por fotos (`TransitionOverlay`, padrão)
+### Transição do resize por fotos (`TransitionOverlay`, `"resizeStyle": "photos"`)
 
 Nenhum app acompanha uma animação de resize (o WhatsApp faz ~7 tamanhos por segundo, Chromium desenha depois e mostra área em branco, o WezTerm estica o texto antigo). Então, no `Option +/-`, a tela vira nossa, como num compositor:
 
@@ -107,6 +107,19 @@ Caminho até aqui, cada passo testado com o usuário e com gravação de tela:
 - O WezTerm cinza era a sombra (calculada pelo contorno da foto, aparecia por dentro do fundo translúcido) e as duas camadas translúcidas empilhadas na fusão.
 
 Ferramentas da medição: `--script` agora roda também sem `--pid` (nas janelas de verdade, com foco), que é o único jeito de medir troca de foco. A gravação do que aparece na tela foi feita lendo `CGWindowListCreateDescriptionFromArray` a cada ~1,2 ms (não fala com o app).
+
+### Resize fantasma (`GhostOverlay`, padrão desde 2026-10-15)
+
+Ideia da prévia do Loop (MrKai77/Loop): em vez de fotografar, um vidro fosco nosso (`NSVisualEffectView` `.hudWindow`, borda na cor de destaque, canto de 16 pt) anda no lugar da janela que muda de tamanho.
+
+1. Na tecla, o vidro entra no lugar da janela e ela vai pra fora da tela (1 pt na borda direita). Encolhendo, o tamanho novo é aplicado antes de sair, ainda na tela e por baixo do vidro, porque fora da tela o Electron recusa resize.
+2. A fita anima: as vizinhas são as janelas reais (só posição, como no `< >`), e o vidro segue o frame da janela escondida. Outra tecla no meio só muda o alvo da fita.
+3. Fita parada: a janela volta no lugar e tamanho finais, por baixo do vidro. O vidro só começa a sumir quando o app terminou de redesenhar: captura da janela (não aparece na tela) até ela ter a largura final e ficar 50 ms sem mudar, no máximo 600 ms (vídeo tocando nunca para). Aí some em 350 ms, com curva suave no começo e no fim. Sem Gravação de Tela, espera fixa de 300 ms.
+4. A conferência pós-animação espera o vidro sumir, senão leria o tamanho velho e mandaria o resize de novo no meio do redesenho.
+
+Primeira versão saía com tempo fixo (100 ms de espera + fade de 200 ms): o usuário achou a saída brusca, dava pra ver a página do Arc se reorganizando e o texto do WezTerm refluindo durante o fade. Com a espera pela captura, num painel de teste que pisca por 300 ms depois de cada resize, o vidro esperou 369 e 380 ms.
+
+Primeira medição (2026-10-15, painéis de teste, 5 resizes seguidos): maior intervalo entre frames de 8,4 a 16,9 ms, CPU ~2,5% durante a animação (as fotos: 27 a 40%), memória 10 MB com pico de 10 MB (as fotos: 13 MB parado e ~28 MB de pico). Começa a mexer na hora da tecla, sem esperar o app. Avaliação do usuário nos apps reais: "melhorou demais, esse é o caminho"; virou o padrão no lugar das fotos.
 
 ## Testar sem mexer nas suas janelas
 

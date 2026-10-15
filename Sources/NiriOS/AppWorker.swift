@@ -61,8 +61,8 @@ final class AppWorker {
     private var stopped = false
     private var observerSource: CFRunLoopSource?
     private var stats = Stats()
-    /// Janelas que a transição do resize (`TransitionOverlay`) está desenhando no lugar delas: os
-    /// frames da fita são ignorados até elas voltarem (`attach`).
+    /// Janelas que a transição do resize (`TransitionOverlay` ou `GhostOverlay`) está desenhando no
+    /// lugar delas: os frames da fita são ignorados até elas voltarem (`attach`).
     private var detached: Set<CGWindowID> = []
 
     struct Stats {
@@ -202,6 +202,7 @@ final class AppWorker {
         observed.formIntersection(current.keys)
         seen.formIntersection(current.keys)
         requested = requested.filter { current[$0.key] != nil }
+        lock.lock(); detached.formIntersection(current.keys); lock.unlock()
         var placed: [CGWindowID: CGRect] = [:]
         for w in windows { placed[w.id] = w.frame }  // o scan lê o frame real
         self.current = placed
@@ -286,12 +287,30 @@ final class AppWorker {
         }
     }
 
-    /// Devolve a janela ao lugar final. Só posição: o tamanho já é o final.
+    /// Resize fantasma: a janela sai da fita (os frames da fita são ignorados) e espera fora da tela, com
+    /// 1 pt na borda, até `attach`. Encolhendo, o tamanho novo vai antes, ainda na tela e por baixo do
+    /// vidro (fora da tela o Electron recusa resize): na volta ela já cabe no lugar e não invade a vizinha.
+    func park(_ id: CGWindowID, at p: CGPoint, shrinkTo size: CGSize?) {
+        lock.lock(); detached.insert(id); lock.unlock()
+        queue.async {
+            guard let el = self.elements[id] else { return }
+            if let size { _ = AX.setSize(el, size) }
+            _ = AX.setPosition(el, p)
+            self.current[id] = CGRect(origin: p, size: size ?? self.current[id]?.size ?? .zero)
+        }
+    }
+
+    /// Devolve a janela ao lugar final. Da transição por fotos ela volta já no tamanho final (só posição);
+    /// do resize fantasma, crescendo, cresce aqui, dentro do lugar final.
     func attach(_ id: CGWindowID, at r: CGRect, done: @escaping () -> Void) {
         queue.async {
             if let el = self.elements[id] {
+                let c = self.current[id]
+                let resized = c.map { abs($0.width - r.width) > 1 || abs($0.height - r.height) > 1 } ?? false
+                // Encolhendo: tamanho antes da posição, senão ela invade a vizinha por um instante.
+                if resized, let c, r.width < c.width { _ = AX.setSize(el, r.size) }
                 _ = AX.setPosition(el, r.origin)
-                if let c = self.current[id], abs(c.width - r.width) > 1 || abs(c.height - r.height) > 1 {
+                if resized {
                     _ = AX.setSize(el, r.size)
                     _ = AX.setPosition(el, r.origin)
                 }

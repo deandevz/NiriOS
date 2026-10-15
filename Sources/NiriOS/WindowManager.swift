@@ -80,6 +80,7 @@ final class WindowManager: NSObject {
         link.isPaused = true
         self.link = link
         _ = transition  // a janela da transição já fica pronta na tela, vazia
+        _ = ghost
 
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] n in
@@ -323,7 +324,7 @@ final class WindowManager: NSObject {
             if moving { deferFocus(id) } else { requestFocus(id) }
         case .grow, .shrink, .toggleFullWidth:
             if transition != nil, startGlobal(action, at: now) { return }
-            resize(&layout, action, at: now)
+            if ghost != nil { resizeWithGhost(action, at: now) } else { resize(&layout, action, at: now) }
         }
         animate()
     }
@@ -342,9 +343,9 @@ final class WindowManager: NSObject {
     // MARK: - Transição do resize (ver TransitionOverlay)
 
     /// Precisa de Gravação de Tela (pra fotografar as janelas); sem ela, o resize anima as janelas
-    /// reais direto, como antes. Desliga com `"photoTransitions": false` na config.
+    /// reais direto, como antes. Só com `"resizeStyle": "photos"`.
     private lazy var transition: TransitionOverlay? = {
-        guard config.photoTransitions, dev.pid == nil else { return nil }
+        guard config.resizeStyle == .photos, dev.pid == nil else { return nil }
         guard CGPreflightScreenCaptureAccess() else {
             log("sem permissão de Gravação de Tela: resize sem a transição por fotos")
             return nil
@@ -559,6 +560,80 @@ final class WindowManager: NSObject {
         }
     }
 
+    // MARK: - Resize fantasma (ver GhostOverlay)
+
+    private lazy var ghost: GhostOverlay? = config.resizeStyle == .ghost ? GhostOverlay(screen: NSScreen.screens[0]) : nil
+    /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
+    private var ghosted: Set<CGWindowID> = []
+
+    /// O vidro entra no lugar da janela focada e ela espera fora da tela até a fita parar
+    /// (`finishGhosts`). Outra tecla no meio só muda o alvo da fita: o vidro segue, a janela não volta.
+    private func resizeWithGhost(_ action: Action, at now: Double) {
+        let id = layout.focusedWindow, before = finalFrame(id)
+        resize(&layout, action, at: now)
+        guard let ghost, let id, let t = tracked[id], let to = finalFrame(id), to.size != before?.size,
+              let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
+        ghost.show(id, at: r)
+        guard ghosted.insert(id).inserted else { return }
+        CATransaction.flush()  // o vidro entra antes de a janela sair
+        workers[t.pid]?.park(id, at: CGPoint(x: layout.bounds.maxX - layout.config.sliver, y: r.minY),
+                             shrinkTo: to.width < r.width ? to.size : nil)
+    }
+
+    /// Onde a janela fica quando a fita parar.
+    private func finalFrame(_ id: CGWindowID?) -> CGRect? {
+        var l = layout
+        l.snapToTargets()
+        return l.frames(at: 0).first { $0.window == id }?.rect
+    }
+
+    /// Fita parada: as janelas escondidas voltam no lugar e tamanho finais, por baixo do vidro, e o vidro
+    /// some depois que o app teve tempo de redesenhar.
+    private func finishGhosts(_ frames: [WindowFrame]) {
+        for id in ghosted {
+            guard let t = tracked[id], let w = workers[t.pid], let r = frames.first(where: { $0.window == id })?.rect else {
+                ghost?.fadeOut(id)  // fechou no meio
+                continue
+            }
+            w.attach(id, at: r) {
+                self.whenDrawn(id, width: r.width) {
+                    if !self.ghosted.contains(id) { self.ghost?.fadeOut(id) }  // senão outra tecla escondeu de novo
+                }
+            }
+        }
+        ghosted = []
+    }
+
+    private lazy var canCapture = CGPreflightScreenCaptureAccess()
+
+    /// `done` quando o app terminou de redesenhar no tamanho novo. Com tempo fixo, o vidro sumia com a
+    /// página do Arc ainda se reorganizando e o texto do WezTerm refluindo. Terminou = a captura da janela
+    /// já tem a largura final (o app entregou o tamanho novo) e não muda há 50 ms. Sem Gravação de Tela,
+    /// espera fixa de 300 ms.
+    private func whenDrawn(_ id: CGWindowID, width: Double, since t0: Double = CACurrentMediaTime(),
+                           last: (sig: [UInt8], at: Double)? = nil, done: @escaping () -> Void) {
+        guard canCapture else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: done); return }
+        let now = CACurrentMediaTime()
+        let ms = String(format: "%.0f ms", (now - t0) * 1000)
+        if let last, now - last.at >= 0.05 {
+            if verbose { log("vidro: janela \(id) pronta em \(ms)") }
+            return done()
+        }
+        guard now - t0 < GhostOverlay.maxWait, !ghosted.contains(id) else {
+            if verbose && !ghosted.contains(id) { log("vidro: janela \(id) ainda desenhando aos \(ms), sai assim mesmo") }
+            return done()
+        }
+        let px = width * NSScreen.screens[0].backingScaleFactor
+        DispatchQueue.global(qos: .userInteractive).async {
+            let sig = Private.capture(id).flatMap { abs(Double($0.width) - px) <= 2 ? TransitionOverlay.signature($0) : nil }
+            DispatchQueue.main.async {
+                // Igual à anterior: continua contando desde ela. Diferente (ou ainda no tamanho velho): recomeça.
+                let same = sig != nil && last.map { TransitionOverlay.same($0.sig, sig!) } == true
+                self.whenDrawn(id, width: width, since: t0, last: same ? last : sig.map { ($0, CACurrentMediaTime()) }, done: done)
+            }
+        }
+    }
+
     private let focusDelay = (ProcessInfo.processInfo.environment["NIRI_FOCUS_DELAY"].flatMap(Double.init) ?? 0) / 1000
     /// Foco que espera a fita assentar (ver `perform`).
     private var deferredFocus: CGWindowID?
@@ -615,6 +690,7 @@ final class WindowManager: NSObject {
             if let t = tracked[f.window] { byApp[t.pid, default: []].append((f.window, f.rect)) }
         }
         for (pid, frames) in byApp { workers[pid]?.submit(frames, screen: layout.bounds, firstFrame: ticks == 0) }
+        ghost?.update(frames)
         if let g = global, g.running {
             let fr = Dictionary(uniqueKeysWithValues: frames.filter { g.windows.contains($0.window) }.map { ($0.window, $0.rect) })
             transition?.update(fr, morph: g.morph)
@@ -626,10 +702,15 @@ final class WindowManager: NSObject {
 
         if settled {
             link?.isPaused = true
+            let unghosting = !ghosted.isEmpty
+            if unghosting { finishGhosts(frames) }
             if let id = deferredFocus { requestFocus(id) }
             if verbose { report(duration: now - animationStart, ticks: ticks, maxTickGap: maxTickGap) }
-            // Espera o app terminar de aplicar (Electron é assíncrono) e confere.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            // Espera o app terminar de aplicar (Electron é assíncrono) e confere. Depois do fantasma, só com
+            // o vidro já fora: a janela acabou de mudar de tamanho de uma vez, e uma leitura cedo veria o
+            // tamanho velho e mandaria o resize de novo no meio do redesenho.
+            let wait = unghosting ? 0.15 + GhostOverlay.maxWait + GhostOverlay.fade : 0.15
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
                 guard let self, self.link?.isPaused == true else { return }
                 for w in self.workers.values {
                     w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
