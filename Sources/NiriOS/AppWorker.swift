@@ -61,6 +61,9 @@ final class AppWorker {
     private var stopped = false
     private var observerSource: CFRunLoopSource?
     private var stats = Stats()
+    /// Janelas que a transição do resize (`TransitionOverlay`) está desenhando no lugar delas: os
+    /// frames da fita são ignorados até elas voltarem (`attach`).
+    private var detached: Set<CGWindowID> = []
 
     struct Stats {
         var frames = 0
@@ -267,6 +270,39 @@ final class AppWorker {
         if needsDrain { queue.async { self.drain() } }
     }
 
+    /// Transição do resize: a janela sai da animação (os frames da fita são ignorados) e vai direto pro
+    /// lugar e tamanho finais, na tela, por baixo das fotos. `done` quando o app devolveu.
+    func placeHidden(_ id: CGWindowID, at r: CGRect, done: @escaping () -> Void) {
+        lock.lock(); detached.insert(id); lock.unlock()
+        queue.async {
+            if let el = self.elements[id] {
+                let shrinking = (self.current[id]?.width ?? 0) > r.width
+                if shrinking { _ = AX.setSize(el, r.size) }
+                _ = AX.setPosition(el, r.origin)
+                if !shrinking { _ = AX.setSize(el, r.size) }
+                self.current[id] = r
+            }
+            DispatchQueue.main.async(execute: done)
+        }
+    }
+
+    /// Devolve a janela ao lugar final. Só posição: o tamanho já é o final.
+    func attach(_ id: CGWindowID, at r: CGRect, done: @escaping () -> Void) {
+        queue.async {
+            if let el = self.elements[id] {
+                _ = AX.setPosition(el, r.origin)
+                if let c = self.current[id], abs(c.width - r.width) > 1 || abs(c.height - r.height) > 1 {
+                    _ = AX.setSize(el, r.size)
+                    _ = AX.setPosition(el, r.origin)
+                }
+                self.current[id] = r
+                self.requested[id] = r
+            }
+            self.lock.lock(); self.detached.remove(id); self.lock.unlock()
+            DispatchQueue.main.async(execute: done)
+        }
+    }
+
     /// Depois que a animação assenta (fora do caminho crítico): lê o frame real de cada janela.
     /// - Devolve pro lugar a que o usuário arrastou ou que o app moveu sozinho.
     /// - Janela inteira na tela e mais larga que o pedido = o app recusou encolher. Esse é o
@@ -277,10 +313,11 @@ final class AppWorker {
         queue.async {
             self.lock.lock()
             let screen = self.clip
+            let detached = self.detached
             self.lock.unlock()
             var fixed = 0
             var minWidths: [(CGWindowID, Double)] = []
-            for (id, r) in self.requested {
+            for (id, r) in self.requested where !detached.contains(id) {
                 guard let el = self.elements[id],
                       let p = AX.point(AX.copy(el, kAXPositionAttribute)),
                       let s = AX.size(AX.copy(el, kAXSizeAttribute)) else { continue }
@@ -319,7 +356,7 @@ final class AppWorker {
 
     private func drain() {
         lock.lock()
-        let batch = pending
+        let batch = pending.filter { !detached.contains($0.key) }
         let screen = clip
         pending.removeAll()
         drainScheduled = false

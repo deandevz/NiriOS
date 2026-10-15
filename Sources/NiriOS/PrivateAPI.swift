@@ -25,6 +25,20 @@ enum Private {
     private static let getPSN = symbol("GetProcessForPID", in: defaultHandle, as: GetPSNFn.self)
     private static let setFront = symbol("_SLPSSetFrontProcessWithOptions", in: skyLight, as: SetFrontFn.self)
     private static let postEvent = symbol("SLPSPostEventRecordTo", in: skyLight, as: PostEventFn.self)
+    private typealias MainConnFn = @convention(c) () -> Int32
+    private typealias CaptureFn = @convention(c) (Int32, UnsafeMutablePointer<UInt32>, Int32, UInt32) -> Unmanaged<CFArray>?
+    private static let mainConnection = symbol("SLSMainConnectionID", in: skyLight, as: MainConnFn.self)
+    private static let captureWindows = symbol("SLSHWCaptureWindowList", in: skyLight, as: CaptureFn.self)
+
+    /// Foto da janela inteira de outro app, mesmo fora da tela. Precisa de Gravação de Tela.
+    /// Opções: 1<<11 ignora o recorte global, 1<<8 resolução Retina, 1<<15 a janela toda (sem ela
+    /// só vem a parte visível). Medido: 10 a 60 ms; a ScreenCaptureKit leva ~95 ms.
+    static func capture(_ window: CGWindowID) -> CGImage? {
+        guard let mainConnection, let captureWindows else { return nil }
+        var id = window
+        let list = captureWindows(mainConnection(), &id, 1, 1 << 11 | 1 << 8 | 1 << 15)?.takeRetainedValue()
+        return (list as? [CGImage])?.first
+    }
 
     /// ID da janela no WindowServer a partir do elemento AX.
     static func windowID(of element: AXUIElement) -> CGWindowID? {

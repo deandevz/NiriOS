@@ -28,6 +28,9 @@ final class HotkeyTap {
     ]
 
     private let handler: (Action) -> Void
+    /// Option apertado sozinho / solto: a transição do resize fotografa antes da tecla chegar.
+    var onOption: ((Bool) -> Void)?
+    private var optionDown = false
     private let verbose: Bool
     private var port: CFMachPort?
 
@@ -38,6 +41,7 @@ final class HotkeyTap {
 
     func start() -> Bool {
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue) | CGEventMask(1 << CGEventType.keyUp.rawValue)
+            | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             let tap = Unmanaged<HotkeyTap>.fromOpaque(refcon!).takeUnretainedValue()
             return tap.handle(type, event)
@@ -69,6 +73,14 @@ final class HotkeyTap {
             return Unmanaged.passUnretained(event)
         }
         let mods = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl])
+        if type == .flagsChanged {
+            let down = mods == .maskAlternate
+            if down != optionDown, let onOption {
+                optionDown = down
+                DispatchQueue.main.async { onOption(down) }
+            }
+            return Unmanaged.passUnretained(event)
+        }
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
         if verbose && type == .keyDown && mods.contains(.maskAlternate) {
             log("tecla: código \(keycode), modificadores 0x\(String(event.flags.rawValue, radix: 16)) -> \(Self.bindings[keycode].map { "\($0)" } ?? "sem atalho")")

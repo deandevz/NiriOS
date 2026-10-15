@@ -182,3 +182,18 @@ func gapIsExactInEveryFrame(center: CenterMode) {
     l.resizeFocused(by: -0.1, at: 0)
     #expect(settle(&l)[0].rect.width < 1704)
 }
+
+/// Option+/- pula entre larguras prontas (como no niri), partindo de qualquer largura atual.
+@Test func presetsStepToNextWidth() {
+    var l = makeLayout(2, proportion: 0.77)
+    let presets = [1.0 / 3, 0.5, 2.0 / 3, 1]
+    l.resizeFocused(toPresetIn: presets, direction: -1, at: 0)
+    #expect(abs(l.columns[0].proportion - 0.667) < 0.001)
+    l.resizeFocused(toPresetIn: presets, direction: 1, at: 0)
+    l.resizeFocused(toPresetIn: presets, direction: 1, at: 0)
+    #expect(l.columns[0].proportion == 1)
+    l.resizeFocused(toPresetIn: presets, direction: 1, at: 0)  // na ponta: nada muda
+    #expect(l.columns[0].proportion == 1)
+    for _ in 0..<5 { l.resizeFocused(toPresetIn: presets, direction: -1, at: 0) }
+    #expect(abs(l.columns[0].proportion - 0.333) < 0.001)
+}

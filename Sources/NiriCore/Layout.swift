@@ -171,6 +171,16 @@ public struct Layout {
         retarget(at: t)
     }
 
+    /// Pula pra próxima largura da lista, como o `switch-preset-column-width` do niri: passos maiores e
+    /// fixos (1/3, 1/2, 2/3, 1) em vez de ±10%. `direction` +1 cresce, -1 encolhe. Na ponta, nada muda.
+    public mutating func resizeFocused(toPresetIn presets: [Double], direction: Int, at t: Double) {
+        guard let f = focusedIndex else { return }
+        let p = columns[f].proportion, eps = 0.01
+        let target = direction > 0 ? presets.sorted().first { $0 > p + eps } : presets.sorted().last { $0 < p - eps }
+        guard let target else { return }
+        resizeFocused(by: target - p, at: t)
+    }
+
     /// O app recusou ficar mais estreito que `width`.
     /// Mais largo que a área útil não é crível: é leitura feita antes de um app assíncrono (Arc,
     /// Electron) aplicar o tamanho. Aceitar travaria a coluna mais larga que a tela.

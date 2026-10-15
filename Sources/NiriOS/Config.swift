@@ -14,6 +14,11 @@ struct Config {
     var defaultColumnWidth: Double = 0.5
     /// Quanto Option+ e Option- mudam a largura, como fração da área útil.
     var widthStep: Double = 0.1
+    /// Larguras do Option+/- (como no niri). Lista vazia = passo de `widthStep`. Passos maiores são
+    /// menos transições, e cada uma é onde um app pode mostrar defeito.
+    var widthPresets: [Double] = [1.0 / 3, 0.5, 2.0 / 3, 1]
+    /// Resize animado com fotos das janelas (ver TransitionOverlay). Precisa de Gravação de Tela.
+    var photoTransitions = true
     /// Rigidez da mola. Maior = animação mais rápida. 800 é o padrão do niri.
     var stiffness: Double = 800
     /// Tempo máximo esperando um app responder uma chamada de Acessibilidade (s).
@@ -37,12 +42,14 @@ struct Config {
         if let v = num("bottomPadding") { c.bottomPadding = v }
         if let v = num("defaultColumnWidth") { c.defaultColumnWidth = v }
         if let v = num("widthStep") { c.widthStep = v }
+        if let v = obj["widthPresets"] as? [NSNumber] { c.widthPresets = v.map(\.doubleValue) }
+        if let v = obj["photoTransitions"] as? Bool { c.photoTransitions = v }
         if let v = num("stiffness") { c.stiffness = v }
         if let v = num("axTimeout") { c.axTimeout = v }
         if let s = obj["centerFocusedColumn"] as? String {
             if let m = CenterMode(rawValue: s) { c.centerFocusedColumn = m } else { log("config: centerFocusedColumn '\(s)' inválido") }
         }
-        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "stiffness", "axTimeout",
+        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "photoTransitions", "stiffness", "axTimeout",
                           "centerFocusedColumn"]
         for key in obj.keys where !known.contains(key) { log("config: chave desconhecida '\(key)'") }
         log("config carregada de \(path.path)")

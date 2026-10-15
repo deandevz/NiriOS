@@ -33,7 +33,11 @@ final class WindowManager: NSObject {
     private var ticks = 0
     private var lastTick = 0.0
     private var maxTickGap = 0.0
-    private lazy var hotkeys = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
+    private lazy var hotkeys: HotkeyTap = {
+        let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
+        if transition != nil { tap.onOption = { [weak self] down in self?.prefetchPhotos(down) } }
+        return tap
+    }()
 
     init(config: Config, verbose: Bool, dev: DevOptions = DevOptions()) {
         self.config = config
@@ -75,6 +79,7 @@ final class WindowManager: NSObject {
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         self.link = link
+        _ = transition  // a janela da transição já fica pronta na tela, vazia
 
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] n in
@@ -181,6 +186,10 @@ final class WindowManager: NSObject {
     /// Executa as ações do --script com 0,6 s entre elas, confere o resultado e sai.
     private func runScript() {
         for (i, action) in dev.script.enumerated() {
+            // Experimento global: simula o Option descendo 100 ms antes, como numa tecla de verdade.
+            if transition != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i + 1) - 0.1) { self.prefetchPhotos(true) }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i + 1)) {
                 log("ação: \(action)")
                 self.perform(action)
@@ -281,26 +290,229 @@ final class WindowManager: NSObject {
     // MARK: - Ações
 
     private func perform(_ action: Action) {
+        guard global == nil else { queuedAction = action; return }  // roda quando a transição acabar
         let now = CACurrentMediaTime()
         switch action {
-        case .grow:
-            layout.resizeFocused(by: config.widthStep, at: now)
-        case .shrink:
-            layout.resizeFocused(by: -config.widthStep, at: now)
         case .focusLeft, .focusRight:
-            guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now) else {
+            // Experimento NIRI_FOCUS_DELAY (ms). Com a fita parada, a rolagem começa esse tanto depois
+            // da tecla: é o tempo do app que ganha ou perde foco se redesenhar (WhatsApp: 25 a 45 ms)
+            // e ficar livre pra andar junto. Repetindo a tecla, rola na hora e só ativa o app onde
+            // parar: quem só foi atravessado não ganha foco e não trava.
+            let repeating = link?.isPaused == false
+            guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now + (repeating ? 0 : focusDelay)) else {
                 if verbose { log("ação \(action): já está na ponta da fita") }
                 return
             }
             if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
-            requestFocus(id)
-        case .toggleFullWidth:
-            layout.toggleFullWidthFocused(at: now)
+            if repeating && focusDelay > 0 { scheduleFocus(id) } else { requestFocus(id) }
+        case .grow, .shrink, .toggleFullWidth:
+            if transition != nil, startGlobal(action, at: now) { return }
+            resize(&layout, action, at: now)
         }
         animate()
     }
 
+    private func resize(_ l: inout Layout, _ action: Action, at t: Double) {
+        switch action {
+        case .grow, .shrink:
+            let dir = action == .grow ? 1 : -1
+            if config.widthPresets.isEmpty { l.resizeFocused(by: Double(dir) * config.widthStep, at: t) }
+            else { l.resizeFocused(toPresetIn: config.widthPresets, direction: dir, at: t) }
+        case .toggleFullWidth: l.toggleFullWidthFocused(at: t)
+        case .focusLeft, .focusRight: break
+        }
+    }
+
+    // MARK: - Transição do resize (ver TransitionOverlay)
+
+    /// Precisa de Gravação de Tela (pra fotografar as janelas); sem ela, o resize anima as janelas
+    /// reais direto, como antes. Desliga com `"photoTransitions": false` na config.
+    private lazy var transition: TransitionOverlay? = {
+        guard config.photoTransitions, dev.pid == nil else { return nil }
+        guard CGPreflightScreenCaptureAccess() else {
+            log("sem permissão de Gravação de Tela: resize sem a transição por fotos")
+            return nil
+        }
+        return TransitionOverlay(screen: NSScreen.screens[0])
+    }()
+    /// Transição em andamento: janelas desenhadas por nós, a que muda de tamanho e se ela já voltou.
+    private struct Global {
+        let windows: [CGWindowID], morph: CGWindowID
+        let action: Action
+        /// `running`: camada na tela. `animating`: a fita já começou a andar (só depois que o app
+        /// entrega o tamanho novo, como o niri espera o commit).
+        var running = false, animating = false, settled = false
+        var latestLive: CGImage?
+        /// Quando o app devolveu o resize, e quando saiu a última captura estável (igual à anterior).
+        var appliedAt = Double.infinity, stableAt = 0.0
+    }
+    private var global: Global?
+    /// Tecla que chegou durante a transição; roda quando ela acabar.
+    private var queuedAction: Action?
+    /// Fotos tiradas quando o Option desceu, antes da tecla: o atraso da transição cai pra ~1 frame.
+    /// Valem só pro layout daquele momento (`layoutVersion`) e somem quando o Option sobe.
+    private var prefetched: (version: Int, photos: [CGWindowID: CGImage], wall: CGImage?)?
+    private var prefetchVersion = 0
+    private var layoutVersion = 0
+    private var optionHeld = false
+
+    private func prefetchPhotos(_ optionDown: Bool) {
+        optionHeld = optionDown
+        prefetchVersion += 1
+        guard optionDown, global == nil, link?.isPaused == true else { prefetched = nil; return }
+        let ticket = prefetchVersion, version = layoutVersion
+        let screen = layout.bounds.insetBy(dx: 2, dy: 0)
+        let ids = layout.frames(at: CACurrentMediaTime()).filter { tracked[$0.window] != nil && $0.rect.intersects(screen) }.map(\.window)
+        DispatchQueue.global(qos: .userInteractive).async {
+            var photos: [CGWindowID: CGImage] = [:]
+            for id in ids { if let p = Private.capture(id) { photos[id] = p } }
+            let wall = TransitionOverlay.captureWallpaper()
+            DispatchQueue.main.async {
+                guard ticket == self.prefetchVersion, version == self.layoutVersion else { return }
+                self.prefetched = (version, photos, wall)
+            }
+        }
+    }
+
+    /// Fotos de tudo que aparece na área (no começo ou no fim), camada nossa por cima idêntica à tela,
+    /// janelas reais direto pro lugar final por baixo, e a fita anima as fotos.
+    private func startGlobal(_ action: Action, at now: Double) -> Bool {
+        guard let transition, link?.isPaused == true, global == nil,
+              let id = layout.focusedWindow, tracked[id] != nil else { return false }
+        var next = layout
+        resize(&next, action, at: now)
+        next.snapToTargets()
+        let start = Dictionary(uniqueKeysWithValues: layout.frames(at: now).map { ($0.window, $0.rect) })
+        let end = Dictionary(uniqueKeysWithValues: next.frames(at: now).map { ($0.window, $0.rect) })
+        guard let from = start[id], let to = end[id], from.size != to.size else { return false }
+        // Janelas que aparecem no começo ou no fim (as estacionadas que continuam estacionadas, não).
+        let screen = layout.bounds.insetBy(dx: 2, dy: 0)
+        var ids = layout.windows.filter { w in
+            tracked[w] != nil && [start[w], end[w]].contains { $0.map { $0.intersects(screen) } ?? false }
+        }
+        ids.removeAll { $0 == id }
+        ids.append(id)  // a que muda de tamanho fica por cima
+        global = Global(windows: ids, morph: id, action: action)
+        let ready = prefetched.flatMap { $0.version == layoutVersion ? $0 : nil }
+        prefetched = nil
+        DispatchQueue.global(qos: .userInteractive).async {
+            // O que não veio da foto antecipada é tirado agora (10 a 15 ms cada; em paralelo não acelera).
+            let photos = ids.map { ready?.photos[$0] ?? Private.capture($0) }
+            let wall = ready.map { $0.wall } ?? TransitionOverlay.captureWallpaper()
+            let tCaptured = CACurrentMediaTime()
+            DispatchQueue.main.async {
+                let tMain = CACurrentMediaTime()
+                let shown = zip(ids, photos).compactMap { w, p in p.map { (id: w, photo: $0, frame: start[w]!, active: w == id) } }
+                guard shown.count == ids.count else { self.global = nil; self.resize(&self.layout, action, at: CACurrentMediaTime()); self.animate(); return }
+                transition.show(wallpaper: wall, windows: shown)
+                CATransaction.flush()
+                if self.verbose {
+                    let ms = { (t: Double) in String(format: "%.0f", (t - now) * 1000) }
+                    log("global: \(ids.count) janelas; fotos prontas aos \(ms(tCaptured)) ms, main aos \(ms(tMain)), camada enviada aos \(ms(CACurrentMediaTime()))")
+                }
+                // A animação espera o app entregar o tamanho novo (como o niri espera o commit). As
+                // janelas reais vão pro lugar final 2 frames depois, quando a camada já está na tela
+                // (com 1 frame, às vezes dava pra ver as janelas reais pulando).
+                self.global?.running = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.034) {
+                    for w in ids {
+                        guard let tw = self.tracked[w], let r = end[w] else { continue }
+                        self.workers[tw.pid]?.placeHidden(w, at: r) {
+                            guard w == id else { return }
+                            self.global?.appliedAt = CACurrentMediaTime()
+                            // Limite do niri pra esperar o app: 300 ms. Depois disso anima com o que tiver.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                guard let g = self.global, g.morph == id, g.running, !g.animating else { return }
+                                if let img = g.latestLive { self.transition?.setLive(id, img) }
+                                self.startGlobalAnimation()
+                            }
+                            self.finishGlobalIfDone()
+                        }
+                    }
+                    self.liveCaptureGlobal(id)
+                }
+            }
+        }
+        return true
+    }
+
+    /// Capturas seguidas da janela que muda de tamanho. Só entra na tela a captura igual à anterior:
+    /// Chromium/Electron redimensionam e desenham depois, e uma captura no meio disso (meio branca ou
+    /// preta) aparecia como piscada no corte.
+    private func liveCaptureGlobal(_ id: CGWindowID, last: [UInt8]? = nil) {
+        DispatchQueue.global(qos: .userInteractive).async {
+            let img = Private.capture(id)
+            let sig = img.map(TransitionOverlay.signature)
+            let stable = sig != nil && last.map { TransitionOverlay.same($0, sig!) } == true
+            DispatchQueue.main.async {
+                guard let g = self.global, g.morph == id, g.running else { return }
+                self.global?.latestLive = img
+                if stable, let img {
+                    self.transition?.setLive(id, img)
+                    self.global?.stableAt = CACurrentMediaTime()
+                    // A fita espera a imagem nova pronta pra começar.
+                    if !g.animating, g.appliedAt < .infinity, self.global!.stableAt > g.appliedAt { self.startGlobalAnimation() }
+                    self.finishGlobalIfDone()
+                }
+                self.liveCaptureGlobal(id, last: sig)
+            }
+        }
+    }
+
+    private func startGlobalAnimation() {
+        guard let g = global, !g.animating else { return }
+        global?.animating = true
+        resize(&layout, g.action, at: CACurrentMediaTime())
+        animate()
+    }
+
+    /// Fim: animação assentada, a janela que mudou de tamanho já devolveu e já tem captura estável
+    /// (a última camada bate com a janela real). Devolve as janelas e 2 frames depois a camada sai.
+    private func finishGlobalIfDone() {
+        guard let g = global, g.running, g.settled, g.appliedAt < .infinity else { return }
+        // Espera uma captura estável tirada depois do resize; vídeo tocando nunca estabiliza: 250 ms.
+        let now = CACurrentMediaTime()
+        if g.stableAt < g.appliedAt && now - g.appliedAt < 0.25 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25 - (now - g.appliedAt)) { self.finishGlobalIfDone() }
+            return
+        }
+        global?.running = false
+        let finals = Dictionary(uniqueKeysWithValues: layout.frames(at: now).map { ($0.window, $0.rect) })
+        transition?.update([:], morph: g.morph)
+        let group = DispatchGroup()
+        for w in g.windows {
+            guard let tw = tracked[w], let r = finals[w] else { continue }
+            group.enter()
+            workers[tw.pid]?.attach(w, at: r) { group.leave() }
+        }
+        group.notify(queue: .main) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.034) {
+                self.transition?.hide {
+                    self.global = nil
+                    if let a = self.queuedAction { self.queuedAction = nil; self.perform(a) }
+                    // Option ainda apertado: a próxima tecla provavelmente é outro +/-.
+                    else if self.optionHeld { self.prefetchPhotos(true) }
+                }
+            }
+        }
+    }
+
+    private let focusDelay = (ProcessInfo.processInfo.environment["NIRI_FOCUS_DELAY"].flatMap(Double.init) ?? 0) / 1000
+    private var focusWork: DispatchWorkItem?
+
+    /// Ativa o app só quando a tecla parar de repetir. Enquanto isso, eventos de foco de outros apps
+    /// são eco (senão uma conferência antiga puxaria o layout de volta no meio do spam).
+    private func scheduleFocus(_ id: CGWindowID) {
+        focusWork?.cancel()
+        pendingFocus = (id, CACurrentMediaTime())
+        let work = DispatchWorkItem { [weak self] in self?.requestFocus(id) }
+        focusWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
     private func requestFocus(_ id: CGWindowID) {
+        focusWork?.cancel()
+        focusWork = nil
         guard let t = tracked[id] else { return }
         if dev.pid != nil { return }  // teste não rouba o foco de quem está usando o Mac
         pendingFocus = (id, CACurrentMediaTime())
@@ -316,6 +528,7 @@ final class WindowManager: NSObject {
     // MARK: - Animação
 
     private func animate() {
+        layoutVersion += 1
         scheduleSave()
         guard let link else { return }
         if link.isPaused {
@@ -338,10 +551,16 @@ final class WindowManager: NSObject {
         if settled { layout.snapToTargets() }
 
         var byApp: [pid_t: [(CGWindowID, CGRect)]] = [:]
-        for f in layout.frames(at: now) {
+        let frames = layout.frames(at: now)
+        for f in frames {
             if let t = tracked[f.window] { byApp[t.pid, default: []].append((f.window, f.rect)) }
         }
         for (pid, frames) in byApp { workers[pid]?.submit(frames, screen: layout.bounds, firstFrame: ticks == 0) }
+        if let g = global, g.running {
+            let fr = Dictionary(uniqueKeysWithValues: frames.filter { g.windows.contains($0.window) }.map { ($0.window, $0.rect) })
+            transition?.update(fr, morph: g.morph)
+            if settled && g.animating { global?.settled = true; finishGlobalIfDone() }
+        }
         ticks += 1
         if lastTick > 0 { maxTickGap = max(maxTickGap, now - lastTick) }
         lastTick = now
