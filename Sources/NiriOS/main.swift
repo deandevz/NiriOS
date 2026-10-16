@@ -50,6 +50,11 @@ if let path = value("--wallpaper") {
     WallpaperProcess.run(path, effect: argv.last.flatMap(WallpaperEffect.init) ?? .none)
 }
 
+// Reiniciado por ligar ou desligar a fita com o painel aberto (ver `Settings.restart`). Sai do ambiente antes de abrir
+// outro processo.
+let reopenSettings = getenv(Settings.reopenKey) != nil
+unsetenv(Settings.reopenKey)
+
 let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
 guard AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) else {
     log("""
@@ -139,8 +144,8 @@ for sig in [SIGINT, SIGTERM, SIGHUP] {
 }
 
 wm.start()
-// Teste (--pid, --script) não ganha ícone nem recarga: roda ao lado da instância de verdade.
-let settings = dev.pid == nil && dev.script.isEmpty ? Settings(wm: wm) : nil
-// No teste, só com outra pasta (`NIRI_CLIPBOARD`): o `clipboard` do --script abre e fecha o painel.
-if settings != nil || ProcessInfo.processInfo.environment["NIRI_CLIPBOARD"] != nil { wm.clipboard = Clipboard() }
+// Teste (--pid, --script) não ganha ícone nem recarga: roda ao lado da instância de verdade. Com --pid e `NIRI_CONFIG`
+// ganha, pra testar a recarga (e o reinício da fita) sem mexer no config de uso.
+let settings = dev.script.isEmpty && (dev.pid == nil || getenv("NIRI_CONFIG") != nil) ? Settings(wm: wm) : nil
+if reopenSettings { settings?.openPanel() }
 app.run()

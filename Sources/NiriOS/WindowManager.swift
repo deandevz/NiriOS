@@ -66,19 +66,24 @@ final class WindowManager: NSObject {
     private var maxTickGap = 0.0
     /// Só na instância de verdade: teste (--pid, --script) não mexe no papel de parede.
     private var wallpaper: WallpaperHost?
-    /// O histórico do Option+V. Só na instância de verdade.
-    var clipboard: Clipboard?
+    /// O histórico do Option+V. Na instância de verdade, e no teste só com outra pasta (`NIRI_CLIPBOARD`): o `clipboard`
+    /// do --script abre e fecha o painel.
+    private var clipboard: Clipboard?
+    private var clipboardAllowed: Bool {
+        dev.pid == nil && dev.script.isEmpty || ProcessInfo.processInfo.environment["NIRI_CLIPBOARD"] != nil
+    }
     /// `niri-os --workspace <nome>` (o clique na SketchyBar, por exemplo) chega por aqui.
     static let workspaceRequest = Notification.Name("niri-os.workspace")
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
         tap.setShortcuts(config.shortcuts)
-        tap.onModifiers = { [weak self] down in self?.modifiersChanged(down) }
+        // Sem a fita, o Option do Option+V não tem transição nem vidro pra preparar.
+        if config.has(.tiling) { tap.onModifiers = { [weak self] down in self?.modifiersChanged(down) } }
         return tap
     }()
 
     init(config: Config, verbose: Bool, dev: DevOptions = DevOptions()) {
-        self.config = config
+        self.config = config.active
         self.verbose = verbose
         self.dev = dev
         // No teste, a borda continua sendo a da tela de verdade (janela sai e estaciona igual ao
@@ -107,18 +112,17 @@ final class WindowManager: NSObject {
 
     /// Config recarregada (arquivo salvo ou painel). Atalhos, borda e regras de app valem na hora; gap,
     /// margens, mola, centralização e a lista de workspaces animam as janelas pro layout novo. `resizeStyle` e
-    /// `axTimeout` só ao reiniciar.
-    func apply(_ c: Config) {
-        let old = config
+    /// `axTimeout` só ao reiniciar. Recurso desligado sai na hora (ver `Config.active`).
+    func apply(_ raw: Config) {
+        let old = config, c = raw.active
         config = c
         hotkeys.setShortcuts(c.shortcuts)
-        ghost?.border = (c.borderColor, c.borderWidth)
-        border?.style = (c.borderColor, c.borderWidth)
+        applyFeatures()
         wallpaper?.apply(c)
         if c.resizeStyle != old.resizeStyle || c.axTimeout != old.axTimeout {
             log("config: resizeStyle e axTimeout mudam só ao reiniciar o niri-os")
         }
-        guard dev.pid == nil else { return }
+        guard dev.pid == nil, c.has(.tiling) else { return }  // ligar e desligar a fita reinicia (ver `Settings.restart`)
         let now = CACurrentMediaTime(), geo = Self.screenGeometry(c), names = c.workspaces.map(\.name)
         guard c.layout != layout.config || geo.area != layout.area || names != workspaces.names else { return }
         let renamed = workspaces.setNames(names, at: now)
@@ -147,23 +151,28 @@ final class WindowManager: NSObject {
             log("não consegui criar o tap de teclado (permissão de Acessibilidade?)")
             exit(1)
         }
+        if dev.pid == nil && dev.script.isEmpty {
+            wallpaper = WallpaperHost()
+            wallpaper?.apply(config)
+        }
+        // Sem a fita, nada de Acessibilidade, display link nem janela nossa: só o histórico e o papel de parede. O
+        // state.json fica como estava, pra fita voltar igual quando religar.
+        guard config.has(.tiling) else {
+            log("fita desligada no config: o niri-os não mexe nas janelas")
+            if !dev.script.isEmpty { exit(0) }  // o --script não tem o que rodar
+            return applyFeatures()
+        }
         let link = NSScreen.screens[0].displayLink(target: self, selector: #selector(tick(_:)))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         self.link = link
-        _ = transition  // a janela da transição já fica pronta na tela, vazia
-        _ = ghost
+        // As janelas da transição e do vidro já ficam prontas na tela, vazias.
+        _ = transition
+        if config.resizeStyle == .ghost { ghost = GhostOverlay(screen: NSScreen.screens[0]) }
         // A 1ª consulta custa ~29 ms na main (as seguintes ~10): aqui nada anima. Na 1ª volta do vidro, caía no meio da
         // animação seguinte (um tick de 20 a 25 ms trocando colunas sem parar).
         _ = canCapture
-        border = FocusBorder()
-        border?.style = (config.borderColor, config.borderWidth)
-        border?.onShow = { [weak self] id in self?.ghost?.ring = id }
-        if dev.pid == nil && dev.script.isEmpty {
-            wallpaper = WallpaperHost()
-            wallpaper?.apply(config)
-        }
 
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] n in
@@ -204,6 +213,23 @@ final class WindowManager: NSObject {
         for app in NSWorkspace.shared.runningApplications { addApp(app) }
         // App que não respondeu até aqui entra depois, como janela nova.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.finishStartup() }
+    }
+
+    /// Cria ou tira a borda e o histórico do clipboard, e aplica o estilo da borda. Tirar fecha a janela e o monitor deles.
+    private func applyFeatures() {
+        if config.has(.border) != (border != nil) {
+            if config.has(.border) {
+                border = FocusBorder()
+                border?.onShow = { [weak self] id in self?.ghost?.ring = id }
+            } else {
+                border = nil
+                ghost?.ring = nil  // o vidro volta a ter a borda dele (sem espessura, com a borda desligada)
+            }
+            if started { updateBorder() }
+        }
+        border?.style = (config.borderColor, config.borderWidth)
+        ghost?.border = (config.borderColor, config.borderWidth)
+        if clipboardAllowed, config.has(.clipboard) != (clipboard != nil) { clipboard = config.has(.clipboard) ? Clipboard() : nil }
     }
 
     private func addApp(_ app: NSRunningApplication) {
@@ -262,6 +288,9 @@ final class WindowManager: NSObject {
     /// senão pro do app no config, senão pro 1º.
     private func finishStartup() {
         guard !started else { return }
+        // Aqui, e não no `start`: janela criada antes do run loop fica presa no AppKit, e a da borda não saía da memória
+        // ao desligar. Antes daqui não tem janela na fita pra ela seguir.
+        applyFeatures()
         started = true
         let all = initialScans
             .flatMap { pid, r in (r.windows ?? []).filter(\.tileable).map { (pid, $0) } }
@@ -878,12 +907,8 @@ final class WindowManager: NSObject {
 
     // MARK: - Resize fantasma (ver GhostOverlay)
 
-    private lazy var ghost: GhostOverlay? = {
-        guard config.resizeStyle == .ghost else { return nil }
-        let g = GhostOverlay(screen: NSScreen.screens[0])
-        g.border = (config.borderColor, config.borderWidth)
-        return g
-    }()
+    /// Com `"resizeStyle": "ghost"` e a fita ligada (ver `start`).
+    private var ghost: GhostOverlay?
     /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
     private var ghosted: Set<CGWindowID> = []
 
@@ -914,7 +939,7 @@ final class WindowManager: NSObject {
     /// sair no que ela encolhe (ver `AppWorker.park`). Sem o vidro (`resizeStyle` photos ou live), nada muda.
     private func hideBehindGlass(_ id: CGWindowID, shrinkTo size: CGSize? = nil, at now: Double) {
         guard let ghost, let t = tracked[id], let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
-        ghost.show(id, of: t.pid, at: r, radius: border?.cornerRadius(of: id) ?? 16)
+        ghost.show(id, of: t.pid, at: r, radius: border?.cornerRadius(of: id) ?? FocusBorder.cornerRadius(of: id))
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
         let shrink = size.flatMap { s in
@@ -1050,18 +1075,20 @@ final class WindowManager: NSObject {
     /// (diálogo, ajustes de um app), focada em outro Space (tela cheia, outro desktop), mesa à mostra e transição por
     /// fotos (que fotografa a tela). Por frame não roda: a borda anda sozinha pelos avisos do WindowServer.
     private func updateBorder() {
-        guard let border else { return }
+        // Os avisos valem mesmo sem a borda: é por eles que a fita sabe da janela fechada no X que só esconde.
         if watched.count != tracked.count || !tracked.keys.allSatisfy(watched.contains) {
             watched = Set(tracked.keys)
             Private.watch(Array(watched)) { [weak self] in self?.windowEvent($0, $1) }
         }
         let now = CACurrentMediaTime(), f = layout.focusedWindow
-        if let f, borderSpace?.window != f { borderSpace = (f, Private.isOnActiveSpace(f)) }
-        let keyboard = NSWorkspace.shared.frontmostApplication.flatMap { appFocus[$0.processIdentifier] }
-        let coming = deferredFocus != nil || pendingFocus.map { now - $0.time < 0.6 } == true
-        let show = f != nil && borderSpace?.onSpace != false && !layout.showsDesktop && global == nil
-            && (dev.pid != nil || coming || keyboard == f)
-        border.follow(show ? f : nil)
+        if let border {
+            if let f, borderSpace?.window != f { borderSpace = (f, Private.isOnActiveSpace(f)) }
+            let keyboard = NSWorkspace.shared.frontmostApplication.flatMap { appFocus[$0.processIdentifier] }
+            let coming = deferredFocus != nil || pendingFocus.map { now - $0.time < 0.6 } == true
+            let show = f != nil && borderSpace?.onSpace != false && !layout.showsDesktop && global == nil
+                && (dev.pid != nil || coming || keyboard == f)
+            border.follow(show ? f : nil)
+        }
         ghost?.focus(f)
     }
 
@@ -1276,7 +1303,7 @@ final class WindowManager: NSObject {
     /// Grava fora da main (a gravação marcada 0,5 s depois de uma animação caía no meio da seguinte). `wait`:
     /// ao sair, espera gravar.
     func saveState(wait: Bool = true) {
-        guard dev.pid == nil else { return }
+        guard dev.pid == nil, config.has(.tiling) else { return }  // sem a fita, o estado de quando ela estava ligada fica
         let cols = (0..<workspaces.count).flatMap { k in
             workspaces[k].columns.flatMap { c in
                 c.tiles.enumerated().map { r, t in

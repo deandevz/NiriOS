@@ -36,6 +36,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.load(Config.load())
         refreshPreview()
         tabs.tabStyle = .toolbar
+        tabs.addTabViewItem(tab("Recursos", "switch.2", height: 340, FeaturesTab(panel: self)))
         tabs.addTabViewItem(tab("Atalhos", "keyboard", height: 290, ShortcutsTab(panel: self)))
         tabs.addTabViewItem(tab("Workspaces", "rectangle.split.3x1", height: 470, WorkspacesTab(panel: self)))
         tabs.addTabViewItem(tab("Papel de parede", "photo", height: 520, WallpaperTab(panel: self)))
@@ -120,7 +121,8 @@ final class PanelController: NSObject, NSWindowDelegate {
                            "borderWidth": m.width == 3 ? nil : m.width,
                            "ghostBorderColor": nil, "ghostBorderWidth": nil,  // os nomes de antes
                            "wallpaper": m.wallpaper.map { ($0.path as NSString).abbreviatingWithTildeInPath },
-                           "wallpaperEffect": m.effect == .none ? nil : m.effect.rawValue]) else {
+                           "wallpaperEffect": m.effect == .none ? nil : m.effect.rawValue,
+                           "features": m.disabled.isEmpty ? nil : Dictionary(uniqueKeysWithValues: m.disabled.map { ($0.rawValue, false) })]) else {
             m.saveError = "Não salvei: o config.json não é um JSON válido. Corrija ou apague o arquivo."
             return
         }
@@ -322,6 +324,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    func setFeature(_ f: Feature, on: Bool) {
+        if on { model.disabled.remove(f) } else { model.disabled.insert(f) }
+        record(nil)  // gravando o atalho de um recurso que acabou de desligar
+        // A fita reinicia o niri-os, que fecha este painel e abre outro: na mesma aba.
+        if f == .tiling { UserDefaults.standard.set(tabs.selectedTabViewItemIndex, forKey: "settingsTab") }
+        scheduleSave()
+    }
+
     func wallpaperChanged() {
         scheduleSave()
         refreshPreview()
@@ -367,6 +377,8 @@ struct AppRef {
     var wallpaper: URL?
     var effect = WallpaperEffect.none
     var preview: CGImage?
+    var disabled: Set<Feature> = []
+    func has(_ f: Feature) -> Bool { f.isOn(disabled) }
     var isVideo: Bool { wallpaper.map(WallpaperArt.isVideo) ?? false }
     /// Com efeito, a prévia é um recorte do centro em tamanho real; sem efeito, a tela inteira reduzida.
     var cropped: Bool { effect != .none && !isVideo }
@@ -388,6 +400,7 @@ struct AppRef {
         warnings = c.warnings
         wallpaper = c.wallpaper
         effect = c.wallpaperEffect
+        disabled = c.disabled
     }
 }
 
@@ -411,6 +424,26 @@ extension Action {
         case .clipboard: "Histórico do que foi copiado"
         case .workspace: "Ir pro workspace"
         case .moveToWorkspace: "Mandar a janela focada"
+        }
+    }
+}
+
+extension Feature {
+    var title: String {
+        switch self {
+        case .tiling: "Fita de janelas"
+        case .border: "Borda da janela focada"
+        case .clipboard: "Histórico do clipboard"
+        case .wallpaper: "Papel de parede do NiriOS"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .tiling: "As janelas em colunas lado a lado, com os workspaces e os atalhos de foco, largura e mesa. Mudar reinicia o NiriOS; desligada, as janelas voltam pra tela em cascata."
+        case .border: "Contorno na janela com o teclado e no vidro do resize. Precisa da fita."
+        case .clipboard: "O atalho mostra o que foi copiado. Desligado, o atalho volta pro app e o histórico fica guardado."
+        case .wallpaper: "Imagem com efeito ou vídeo. Desligado, volta o papel de parede do macOS e o arquivo fica guardado."
         }
     }
 }
@@ -450,6 +483,28 @@ private struct Page<Content: View>: View {
                     .background(.bar)
                 }
             }
+    }
+}
+
+/// Um botão por recurso. Desligado, ele não existe no niri-os: não gasta memória nem CPU.
+private struct FeaturesTab: View {
+    let panel: PanelController
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(Feature.allCases, id: \.self) { f in
+                    Toggle(isOn: Binding(get: { panel.model.has(f) }, set: { panel.setFeature(f, on: $0) })) {
+                        Text(f.title)
+                        Text(f.detail)
+                    }
+                    .accessibilityLabel(f.title)  // sem isso o botão não tem nome (o texto fica num elemento ao lado)
+                    .disabled(f.requires.map { !panel.model.has($0) } ?? false)  // a borda sem a fita
+                }
+            } footer: {
+                Text("Desligado não roda nada nem gasta memória.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -503,6 +558,7 @@ private struct WorkspacesTab: View {
                 Spacer()
             }
         }
+        .disabledFeature(.tiling, model)
     }
 }
 
@@ -612,6 +668,7 @@ private struct WallpaperTab: View {
                 if model.isVideo { Text("O vídeo toca só com a mesa à mostra.").font(.caption).foregroundStyle(.secondary) }
             }
         }
+        .disabledFeature(.wallpaper, model)
     }
 }
 
@@ -623,7 +680,7 @@ private struct BorderTab: View {
         let model = panel.model
         Form {
             Section {
-                GlassPreview(color: model.accent ? nil : model.color, width: model.width)
+                GlassPreview(color: model.accent ? nil : model.color, width: model.has(.border) ? model.width : 0)
                     .frame(height: 170)
                     .clipShape(.rect(cornerRadius: 8))
             }
@@ -642,6 +699,22 @@ private struct BorderTab: View {
             } footer: {
                 Text("Em volta da janela focada e do vidro do resize, com o canto de cada app. 0 tira a borda.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .disabledFeature(.border, model)
+    }
+}
+
+extension View {
+    /// A aba de um recurso desligado fica cinza, com o aviso em cima.
+    func disabledFeature(_ f: Feature, _ model: SettingsModel) -> some View {
+        disabled(!model.has(f)).safeAreaInset(edge: .top, spacing: 0) {
+            if !model.has(f) {
+                let off = f.requires.flatMap { model.has($0) ? nil : $0 } ?? f
+                Label("\(off.title): desligado na aba Recursos.", systemImage: "power")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.top, 12)
             }
         }
     }
@@ -700,6 +773,7 @@ private struct ShortcutRow: View {
             }
             .foregroundStyle(.secondary)
         }
+        .disabled(!model.has(action == .clipboard ? .clipboard : .tiling))
         .onDisappear { if recording { panel.record(nil) } }  // trocou de aba ou de workspace gravando
     }
 }

@@ -64,7 +64,36 @@ final class Settings: NSObject {
 
     private func reload() {
         loaded = try? Data(contentsOf: Config.path)
-        wm.apply(Config.load())
+        let c = Config.load()
+        // Arquivo pela metade (editor que esvazia e depois escreve, `echo >`): com os padrões, os workspaces que não são
+        // 1 a 4 sumiam e as janelas deles iam pro da tela. Fica o que estava; a gravação que completa recarrega.
+        guard !c.invalid else { return log("config: continuo com a anterior até o arquivo ser um JSON válido") }
+        if c.has(.tiling) != wm.config.has(.tiling) { restart() }
+        wm.apply(c)
+    }
+
+    /// `NIRI_OPEN_SETTINGS`: o processo novo abre o painel (ver `restart`).
+    static let reopenKey = "NIRI_OPEN_SETTINGS"
+
+    /// Ligar ou desligar a fita reinicia o processo, com `exec` do mesmo executável (o mesmo pid, o mesmo log). Montar e
+    /// desmontar a fita com o app aberto teria que desfazer as filas por app, os observadores, o display link e as
+    /// janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout. Assim são dois caminhos que já
+    /// existem: desligar devolve as janelas pra tela (o mesmo do Ctrl+C) e guarda o estado; ligar monta a fita do
+    /// state.json, como ao abrir. O painel aberto fecha e abre de novo no processo novo.
+    private func restart() -> Never {
+        log("fita \(wm.config.has(.tiling) ? "desligada" : "ligada"): reiniciando o niri-os")
+        if panel != nil { setenv(Self.reopenKey, "1", 1) }
+        panel?.terminate()
+        wm.shutdown()  // sem a fita, não mexe em nada
+        // Os pipes dos processos filhos fecham com o exec: o do papel de parede vê o fim do stdin e sai, e o novo abre outro.
+        for fd in (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd"))?.compactMap(Int32.init) ?? [] where fd > 2 {
+            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        }
+        let path = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let argv = CommandLine.arguments.map { strdup($0) } + [nil]
+        execv(path, argv)
+        log("não consegui reiniciar (\(String(cString: strerror(errno)))): abra o niri-os de novo")
+        exit(1)
     }
 
     static func openFile(reveal: Bool = false) {
@@ -97,7 +126,7 @@ final class Settings: NSObject {
         Private.focus(pid: pid, window: w, element: AXUIElementCreateApplication(pid), switchWindow: true)
     }
 
-    @objc private func openPanel() {
+    @objc func openPanel() {
         guard panel == nil else { return frontPanel() }  // já aberto, atrás de outro app
         guard let exe = Bundle.main.executableURL else { return }
         let p = Process(), out = Pipe()

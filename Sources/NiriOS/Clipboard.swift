@@ -93,6 +93,12 @@ final class Clipboard {
         }
     }
 
+    /// Histórico desligado no painel. O que já foi copiado fica no disco, pra religar voltar igual.
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        close()
+    }
+
     // MARK: - Painel
 
     func toggle() { panel == nil ? open() : close() }

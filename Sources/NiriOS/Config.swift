@@ -69,8 +69,12 @@ struct Config {
     /// Comando (sh) rodado a cada troca de workspace e ao abrir, com o nome em NIRI_WORKSPACE. Pra SketchyBar:
     /// `sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE`.
     var onWorkspaceChange: String?
+    /// Os recursos desligados (ver `Feature`): `"features": { "clipboard": false }`.
+    var disabled: Set<Feature> = []
     /// O que estava errado no arquivo (aparece no log e no painel).
     var warnings: [String] = []
+    /// O arquivo existe mas não é JSON válido (ver `Settings.reload`).
+    var invalid = false
 
     /// Códigos de tecla são posicionais: valem pra US, US Internacional e ABNT2.
     /// Shift é aceito quando não tem atalho próprio (Option+Shift+= é o Option+=).
@@ -112,7 +116,10 @@ struct Config {
         let data = try? Data(contentsOf: path)
         if let data {
             if let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { obj = o }
-            else { warn("o arquivo não é um JSON válido; usando os padrões") }
+            else {
+                warn("o arquivo não é um JSON válido; usando os padrões")
+                c.invalid = true
+            }
         }
         func num(_ key: String) -> Double? { (obj[key] as? NSNumber)?.doubleValue }
         func text(_ v: Any?) -> String? { v as? String ?? (v as? NSNumber)?.stringValue }
@@ -186,8 +193,14 @@ struct Config {
             warn("wallpaperEffect vale só pra imagem; o vídeo toca sem efeito")
             c.wallpaperEffect = .none
         }
+        for (name, on) in obj["features"] as? [String: Any] ?? [:] {
+            guard let f = Feature(rawValue: name) else { warn("recurso desconhecido em features: '\(name)'"); continue }
+            guard let on = on as? Bool else { warn("features.\(name) precisa ser true ou false"); continue }
+            if !on { c.disabled.insert(f) }
+        }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "heightPresets", "resizeStyle", "stiffness", "axTimeout",
-                          "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange"]
+                          "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange",
+                          "features"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         if data != nil { log("config carregada de \(path.path)") }
         return c
@@ -206,6 +219,19 @@ struct Config {
         else { return false }
         try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         return (try? out.write(to: path.resolvingSymlinksInPath(), options: .atomic)) != nil
+    }
+
+    func has(_ f: Feature) -> Bool { f.isOn(disabled) }
+
+    /// O que o niri-os usa: sem a borda (nem no vidro do resize), o papel de parede e o atalho de recurso desligado. O
+    /// painel fica com o config inteiro, pra religar voltar como estava.
+    var active: Config {
+        var c = self
+        if !has(.tiling) { c.shortcuts = c.shortcuts.filter { $0.key == .clipboard } }
+        if !has(.border) { c.borderWidth = 0 }
+        if !has(.wallpaper) { (c.wallpaper, c.wallpaperEffect) = (nil, .none) }  // o processo devolve o do macOS
+        if !has(.clipboard) { c.shortcuts[.clipboard] = [] }
+        return c
     }
 
     var layout: LayoutConfig {

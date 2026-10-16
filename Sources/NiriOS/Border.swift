@@ -60,6 +60,9 @@ final class FocusBorder {
         panel.orderFrontRegardless()
     }
 
+    /// Borda desligada no painel.
+    deinit { panel.orderOut(nil) }
+
     /// A janela que leva a borda (nil esconde). Na main.
     func follow(_ id: CGWindowID?) {
         guard id != target else { return }
@@ -94,9 +97,12 @@ final class FocusBorder {
 
     /// O do WindowServer ou, se ele diz 0, o medido na tela. Antes de medir (e sem Gravação de Tela), 9 pt, o mesmo
     /// palpite do JankyBorders pra janela sem barra de título: é o canto da maioria delas no macOS 26.
-    func cornerRadius(of id: CGWindowID) -> Double {
+    func cornerRadius(of id: CGWindowID) -> Double { Self.cornerRadius(of: id, measured: measured[id]) }
+
+    /// Sem a borda (desligada), o vidro do resize fica com o do WindowServer, ou 9 pt.
+    static func cornerRadius(of id: CGWindowID, measured: Double? = nil) -> Double {
         let r = Private.cornerRadius(id) ?? 0
-        return r > 0 ? r : measured[id] ?? 9
+        return r > 0 ? r : measured ?? 9
     }
 
     /// Depois da animação: confere com o WindowServer, caso algum aviso tenha se perdido, e mede o canto se precisa.
