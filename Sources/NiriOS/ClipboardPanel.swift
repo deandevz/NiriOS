@@ -28,6 +28,8 @@ final class ClipboardPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private var shown: [Card] = []
     private var selected: String?
     private var keys: Any?
+    /// A imagem grande do clique direito, aberta.
+    private var preview: Preview?
 
     /// A borderless não vira janela do teclado sem isso.
     final class Window: NSPanel {
@@ -113,8 +115,9 @@ final class ClipboardPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         hint.frame = NSRect(x: 16, y: h - Self.hintHeight + 7, width: w - 32, height: 16)
         layoutCards()
 
-        // ⌘P e ⌘⌫ valem pro cartão escolhido, mesmo com o teclado na pesquisa.
+        // ⌘P e ⌘⌫ valem pro cartão escolhido, mesmo com o teclado na pesquisa. Com a imagem grande aberta, Esc fecha só ela.
         keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [unowned self] e in
+            if preview != nil, Int(e.keyCode) == kVK_Escape { closePreview(); return nil }
             guard e.modifierFlags.contains(.command), let id = selected else { return e }
             if e.charactersIgnoringModifiers == "p" { act(.pin, id); return nil }
             if Int(e.keyCode) == kVK_Delete { act(.delete, id); return nil }
@@ -230,6 +233,11 @@ final class ClipboardPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private func act(_ a: Card.Action, _ id: String) {
         switch a {
         case .hover: select(id)
+        case .preview:
+            select(id)
+            guard let data = Clipboard.load(id), let bytes = Clipboard.imageTypes.lazy.compactMap({ data[$0.rawValue] }).first,
+                  let image = NSImage(data: bytes) else { return }
+            preview = Preview(image, on: window.screen ?? NSScreen.screens[0]) { [unowned self] in closePreview() }
         case .paste:
             // Escrito daqui, que sai em seguida: o NSPasteboard guarda os buffers de quem escreve (ver `Clipboard`).
             guard let data = Clipboard.load(id) else { return flash("Essa cópia sumiu do disco") }
@@ -282,6 +290,11 @@ final class ClipboardPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         return true
     }
 
+    private func closePreview() {
+        preview?.orderOut(nil)
+        preview = nil
+    }
+
     private func flash(_ text: String) {
         hint.stringValue = text
         hint.textColor = .systemOrange
@@ -331,11 +344,62 @@ private final class OverlayScroll: NSScrollView {
     }
 }
 
+/// A imagem grande do clique direito: a tela escurecida e a imagem no meio, no tamanho real até 85% da tela. Não vira
+/// janela do teclado: o painel continua com ele (perder o teclado fecha o painel), e o Esc chega lá. Clique fora da
+/// imagem fecha, e o clique não chega no app de baixo.
+private final class Preview: NSPanel {
+    private let onClose: () -> Void
+    private var imageFrame = NSRect.zero
+
+    init(_ image: NSImage, on screen: NSScreen, onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        level = .popUpMenu  // o mesmo do painel, e na frente dele
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        backgroundColor = NSColor.black.withAlphaComponent(0.4)
+        isOpaque = false
+        hasShadow = false
+        // Pixels da imagem em pt da tela: um print Retina aparece do tamanho que tinha na tela.
+        let px = image.representations.first.map { NSSize(width: $0.pixelsWide, height: $0.pixelsHigh) } ?? image.size
+        let native = NSSize(width: px.width / screen.backingScaleFactor, height: px.height / screen.backingScaleFactor)
+        let vis = screen.visibleFrame.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
+        let scale = min(1, vis.width * 0.85 / max(native.width, 1), (vis.height - 30) * 0.85 / max(native.height, 1))
+        let size = NSSize(width: native.width * scale, height: native.height * scale)
+        imageFrame = NSRect(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2 + 12, width: size.width, height: size.height)
+        let view = NSImageView(frame: imageFrame)
+        view.image = image
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 10
+        view.layer?.masksToBounds = true
+        let caption = ClipboardPanel.label("\(Int(px.width)) × \(Int(px.height)) px    esc ou clique fora fecha", size: 12,
+                                           color: NSColor.white.withAlphaComponent(0.7))
+        caption.alignment = .center
+        caption.frame = NSRect(x: vis.minX, y: imageFrame.minY - 28, width: vis.width, height: 16)
+        contentView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        contentView?.wantsLayer = true
+        contentView?.addSubview(view)
+        contentView?.addSubview(caption)
+        orderFrontRegardless()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.duration = 0.12
+        contentView?.layer?.add(fade, forKey: "fade")
+    }
+
+    override var canBecomeKey: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if [.leftMouseDown, .rightMouseDown].contains(event.type), !imageFrame.contains(event.locationInWindow) { return onClose() }
+        super.sendEvent(event)
+    }
+}
+
 /// Uma cópia: o texto (até 3 linhas) ou a miniatura, e embaixo o app e quando. No canto, o alfinete (sempre visível no
 /// fixado) e o x de apagar, os dois no cartão escolhido.
 private final class Card: NSView {
-    enum Action { case hover, paste, pin, delete }
-    let id: String, pinned: Bool
+    enum Action { case hover, paste, pin, delete, preview }
+    let id: String, pinned: Bool, image: Bool
     var action: ((Action, String) -> Void)?
     var selected = false {
         didSet {
@@ -350,6 +414,7 @@ private final class Card: NSView {
     init(_ item: ClipboardList.Item, thumbnail: NSImage?, width: Double) {
         id = item.id
         pinned = item.pinned
+        image = item.text == nil
         pin = Self.button(item.pinned ? "pin.fill" : "pin", tip: item.pinned ? "Desafixar (⌘P)" : "Fixar (⌘P)")
         remove = Self.button("xmark", tip: "Apagar (⌘⌫)")
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 0))
@@ -391,6 +456,7 @@ private final class Card: NSView {
         remove.action = #selector(removeClicked)
         addSubview(pin)
         addSubview(remove)
+        if image { toolTip = "Clique direito: ver maior" }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -426,6 +492,8 @@ private final class Card: NSView {
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { action?(.paste, id) }
     }
+
+    override func rightMouseDown(with event: NSEvent) { if image { action?(.preview, id) } }
 
     @objc private func pinClicked() { action?(.pin, id) }
     @objc private func removeClicked() { action?(.delete, id) }
