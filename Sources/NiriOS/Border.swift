@@ -87,10 +87,16 @@ final class FocusBorder {
         place()
     }
 
-    /// O do WindowServer ou, se ele diz 0, o medido na tela.
+    /// Quanto da espessura fica fora da janela. 1 pt entra nela, como no JankyBorders: cobre o antialiasing do canto e o
+    /// contorno fino do macOS. Encostando por fora, sobrava um fio claro de 1 a 2 px na curva do WezTerm (visto pelo
+    /// usuário; o contorno de dentro de uma borda CA arredondada fica ~1 px mais pra fora que a curva da janela).
+    static func outside(_ width: Double) -> Double { width - min(1, width / 2) }
+
+    /// O do WindowServer ou, se ele diz 0, o medido na tela. Antes de medir (e sem Gravação de Tela), 9 pt, o mesmo
+    /// palpite do JankyBorders pra janela sem barra de título: é o canto da maioria delas no macOS 26.
     func cornerRadius(of id: CGWindowID) -> Double {
         let r = Private.cornerRadius(id) ?? 0
-        return r > 0 ? r : measured[id] ?? 0
+        return r > 0 ? r : measured[id] ?? 9
     }
 
     /// Depois da animação: confere com o WindowServer, caso algum aviso tenha se perdido, e mede o canto se precisa.
@@ -159,8 +165,8 @@ final class FocusBorder {
         transaction {
             ring.borderWidth = style.width
             ring.borderColor = (style.color ?? .controlAccentColor).cgColor
-            // Concêntrico com o canto da janela: o contorno de dentro encosta nela.
-            ring.cornerRadius = radius + style.width
+            // Concêntrico com o canto da janela, 1 pt pra dentro dela (ver `outside`).
+            ring.cornerRadius = radius + Self.outside(style.width)
         }
         shownAt = nil
         place()
@@ -193,7 +199,7 @@ final class FocusBorder {
         }
         guard r != shownAt else { return }
         if panel.frame != screen { panel.setFrame(screen, display: false) }  // resolução mudou
-        let f = r.insetBy(dx: -style.width, dy: -style.width), first = shownFor != target
+        let out = Self.outside(style.width), f = r.insetBy(dx: -out, dy: -out), first = shownFor != target
         transaction {
             ring.frame = CGRect(x: f.minX, y: screen.height - f.maxY, width: f.width, height: f.height)
             ring.isHidden = false

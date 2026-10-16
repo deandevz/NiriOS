@@ -117,7 +117,7 @@ final class Glass: NSView {
     var bordered = true { didSet { restyle() } }
     /// O lugar da janela (coordenadas do AppKit). A borda fica por fora.
     var windowFrame = CGRect.zero {
-        didSet { frame = windowFrame.insetBy(dx: -border.width, dy: -border.width) }
+        didSet { frame = windowFrame.insetBy(dx: -FocusBorder.outside(border.width), dy: -FocusBorder.outside(border.width)) }
     }
 
     init(_ windowFrame: CGRect, icon: NSImage?, iconSize s: Double = 96, radius: Double, border: (color: NSColor?, width: Double)) {
@@ -151,11 +151,13 @@ final class Glass: NSView {
     required init?(coder: NSCoder) { nil }
 
     private func restyle() {
-        let w = border.width
-        frame = windowFrame.insetBy(dx: -w, dy: -w)
+        // Como a borda da janela, entra 1 pt nela, e o desfoque começa ali: senão, com a janela de volta por baixo, o
+        // vidro cobria esse 1 pt da borda dela durante o fade.
+        let w = border.width, out = FocusBorder.outside(w)
+        frame = windowFrame.insetBy(dx: -out, dy: -out)
         effect.frame = bounds.insetBy(dx: w, dy: w)
-        effect.layer?.cornerRadius = radius
-        layer?.cornerRadius = radius + w
+        effect.layer?.cornerRadius = max(0, radius - (w - out))
+        layer?.cornerRadius = radius + out
         layer?.borderWidth = bordered ? w : 0
         layer?.borderColor = (border.color ?? .controlAccentColor).cgColor
     }
