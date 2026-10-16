@@ -408,6 +408,7 @@ extension Action {
         case .consumeOrExpelRight: "Empilhar à direita / separar"
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
+        case .clipboard: "Histórico do que foi copiado"
         case .workspace: "Ir pro workspace"
         case .moveToWorkspace: "Mandar a janela focada"
         }

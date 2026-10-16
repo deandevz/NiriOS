@@ -20,6 +20,7 @@ Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: works
 | `Option ↑` / `Option ↓` | foco na janela de cima / de baixo da coluna (fora de uma coluna empilhada, a tecla vai pro app) |
 | `Option F` | coluna em largura total; de novo volta à largura anterior |
 | `Option D` | mostra a mesa: as janelas saem pela borda mais próxima, sem os ícones da mesa; de novo voltam |
+| `Option V` | histórico do que foi copiado: clique ou `↩` cola, digitar pesquisa, o alfinete fixa (seção "Histórico do clipboard") |
 | `Option 1` a `Option 4` (e a letra de cada workspace) | vai pro workspace; a fita atual sai de lado e a dele entra |
 | `Option Shift 1` a `4` (idem) | manda a janela focada pra esse workspace |
 
@@ -37,7 +38,7 @@ Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). 
   "onWorkspaceChange": "sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE" }
 ```
 
-`shortcuts`: ações `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option Shift =` = `Option =`). O mesmo atalho em duas ações: vale a primeira, com aviso. `borderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `borderWidth` em pt (padrão 3; 0 tira a borda). É a borda da janela focada, que também contorna o vidro do resize (seção "Borda da janela focada"); os nomes de antes, `ghostBorderColor` e `ghostBorderWidth`, ainda valem. `wallpaper`: imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); sem a chave, o niri-os não mexe no papel de parede do macOS (e devolve o de antes, se o atual era dele). `wallpaperEffect`: `none` (padrão), `dither`, `halftone`, `scanlines` ou `ascii`, só pra imagem. Detalhes em "Mesa e papel de parede". `workspaces` e `onWorkspaceChange`: seção "Workspaces".
+`shortcuts`: ações `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `clipboard`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option Shift =` = `Option =`). O mesmo atalho em duas ações: vale a primeira, com aviso. `borderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `borderWidth` em pt (padrão 3; 0 tira a borda). É a borda da janela focada, que também contorna o vidro do resize (seção "Borda da janela focada"); os nomes de antes, `ghostBorderColor` e `ghostBorderWidth`, ainda valem. `wallpaper`: imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); sem a chave, o niri-os não mexe no papel de parede do macOS (e devolve o de antes, se o atual era dele). `wallpaperEffect`: `none` (padrão), `dither`, `halftone`, `scanlines` ou `ascii`, só pra imagem. Detalhes em "Mesa e papel de parede". `workspaces` e `onWorkspaceChange`: seção "Workspaces".
 
 Ao recarregar: atalhos, borda, papel de parede e regras de app valem na hora; a lista de workspaces também (as janelas de um que saiu da lista vão pro atual); `gap`, margens, `defaultColumnWidth`, `stiffness` e `centerFocusedColumn` animam as janelas pro lugar novo (nada pula); `widthPresets`, `heightPresets` e `widthStep` valem na próxima tecla; `resizeStyle` e `axTimeout` só ao reiniciar. Arquivo com JSON inválido: usa os padrões, avisa no log e no painel, e o painel não grava por cima (perderia o que foi escrito à mão).
 
@@ -326,6 +327,41 @@ Tela cheia nativa (2026-10-16): entrar e sair de tela cheia troca de Space sem n
 
 Ainda não conferido no uso real: as regras de foco acima com os apps de verdade (no `--pid` o niri-os não troca o foco), a tela cheia (testar mexeria no Space de quem está usando o Mac), e o clique na mesa com o Finder tendo janela em outro workspace.
 
+## Histórico do clipboard (`Option V`, 2026-10-16)
+
+`Option V` (em `shortcuts`, `clipboard`) abre um painel com o canto no mouse: os últimos 25 textos e imagens copiados e até 10 fixados. Clique ou `↩` cola no app da frente: põe a cópia no clipboard e manda `Cmd V`. Digitar filtra, sem diferença de maiúscula nem de acento, também pelo nome do app de onde veio. `↑ ↓` escolhe, `⌘P` fixa ou desafixa, `⌘⌫` apaga, `Esc` limpa a pesquisa e, vazia, fecha. Clique fora, `Option V` de novo ou outro atalho do niri-os fecham.
+
+- **Regras** (`ClipboardList`, com testes): os 25 recentes rodam; fixado não conta nos 25 e só sai desafixado ou apagado; copiar de novo o que já está na lista sobe pro topo em vez de duplicar (fixado fica onde está); desafixado vira o recente mais novo. Reiniciar o Mac apaga os recentes e mantém os fixados (como no Windows; pela hora do boot); reiniciar o niri-os mantém tudo.
+- **O que entra:** texto com formatação (texto puro, RTF e HTML) ou imagem (PNG, TIFF ou JPEG; só o primeiro que o app der). Fica de fora: o que gerenciador de senha marca como sigiloso (`org.nspasteboard.ConcealedType` e afins; conferido com uma cópia marcada), arquivo copiado no Finder (entraria só o nome) e cópia acima de 50 MB.
+- **Como sabe que copiou:** o macOS não avisa. Em vez de consultar o clipboard a cada 0,5 s (o Maccy faz assim), confere o contador dele (`changeCount`, 0,6 µs por leitura) 0,15 s e 0,6 s depois de tecla com Cmd, Return (o `pbcopy` no terminal) ou clique solto (menu Copiar, botão de copiar, o copiar ao selecionar do WezTerm), e ao abrir o painel. Parado não roda nada. Limite: várias cópias seguidas sem tecla nem clique (um script) entram só a última.
+- **Três processos.** O niri-os só lê o contador e guarda a lista; nunca toca no conteúdo do clipboard. Cada cópia nova é lida por `niri-os --clipboard-read <id> <contador>`, que grava em disco e sai (5 s sem terminar, o niri-os mata: app de origem travado entregando os dados). O painel é `niri-os --clipboard <x> <y>`: recebe a lista pelo stdin, manda `paste`, `pin`, `unpin` e `delete` pelo stdout, escreve ele mesmo no clipboard ao colar e sai ao fechar.
+- **Em disco:** `~/Library/Application Support/niri-os/clipboard/`: `index.json` e uma pasta por cópia, com um arquivo por formato e a miniatura das imagens (feita pelo painel na primeira abertura). Os recentes ficam em disco sem criptografia até o niri-os abrir depois de um reinício do Mac.
+- **O painel não ativa o processo dele** (`nonactivatingPanel`, como o Spotlight): conferido com o app da frente igual antes, durante e depois, e o `Cmd V` caindo no app de teste. Vidro do Tahoe (`NSGlassEffectView`), barra de rolagem fina sempre por cima (com mouse ligado o macOS punha a que ocupa 15 pt, e ela cortava os cartões).
+
+Medido (release, modo de teste, painel de teste flutuante):
+
+| | |
+|---|---|
+| niri-os sem o histórico | 9,7 MB |
+| com o histórico, parado | 9,9 a 10,0 MB |
+| depois de 3 textos e 1 imagem | 10,2 MB |
+| depois de um TIFF de 30 MB, um PNG e um texto | 10,0 a 10,1 MB |
+| depois de abrir e fechar o painel 4 vezes | +0,1 MB |
+| processo do painel, aberto | 19 MB (89 MB na 1ª abertura depois de copiar um TIFF de 30 MB, fazendo a miniatura) |
+| do atalho à janela na tela | 145 a 185 ms |
+| do pedido de colar ao `Cmd V` | 10 ms |
+
+Os ~145 ms do painel: 12 ms até o `main`, 48 ms do `NSApplication` conectando ao WindowServer, 16 do `app.run`, 16 criando a janela, 10 montando 5 cartões, 27 pondo na tela. Script de abrir e fechar 6 vezes com cópias no meio: intervalos entre ações de 626 a 634 ms, iguais aos sem o histórico (a main não trava).
+
+Testado e descartado:
+- **Painel dentro do niri-os:** abria na hora, mas abrir e fechar levava o niri-os de 10,3 pra 19,2 MB, que não voltavam. O heap vivo crescia só 1,3 MB (fontes, símbolos, caches do Objective-C); o resto era página do malloc fragmentada (`malloc_zone_pressure_relief` não devolve). Antes disso, o fade da janela (`window.animator()`) a segurava viva depois de fechada, com os cartões e as miniaturas.
+- **`NSTextField` dentro do niri-os:** +10 MB presos depois da primeira abertura, mesmo sem foco. Um campo próprio com `NSTextInputClient` custava +2 MB e mantinha as teclas mortas (´ e depois a = á, testado no US Internacional). Com o painel em outro processo, voltou o campo do AppKit (cursor, seleção, `Cmd V` na pesquisa).
+- **Ler o clipboard no niri-os:** um TIFF de 30 MB deixava o niri-os em 131 MB. Com a fila em `autoreleaseFrequency: .workItem` e um arquivo por formato (sem plist), 71 MB. Num programa à parte: ler 30 MB pelo NSPasteboard custa 89 MB e nada volta (soltar os dados, `pressure relief`, nem o clipboard mudar: fica em 62); pela API do Carbon (`PasteboardCopyItemFlavorData`), 31 MB presos. Num processo que sai, tudo volta.
+- **ImageIO no niri-os** pra miniatura na hora da cópia: +3 MB que ficavam. A miniatura passou pro painel.
+- **Processo de reserva** (o do painel aberto antes, esperando sem janela): abriria em ~60 ms, mas são 7,9 MB parados o tempo todo. Não feito; fica como opção se os ~150 ms incomodarem.
+
+Limitações: o `Cmd V` mandado usa a posição da tecla V (em Dvorak cairia em outra letra); com a entrada segura do macOS ligada (campo de senha focado), o atalho não chega, como os outros do niri-os.
+
 ## Testar sem mexer nas suas janelas
 
 ```sh
@@ -336,7 +372,7 @@ swift build -c release
 
 `--pid` faz o niri-os cuidar só daquele app, numa faixa no pé da tela, sem atalhos e sem roubar foco. Com o niri-os de uso aberto, rode o de teste de uma cópia do executável (`cp .build/release/niri-os /tmp/niri-os-teste`): com dois processos do mesmo arquivo, a captura de janela do segundo (`SLSHWCaptureWindowList`, que passa pelo `replayd`) nunca volta (visto em 2026-10-16). O vidro do resize sai mesmo assim depois de 0,85 s, e as capturas param até reiniciar. Sem `--pid`, o `--script` roda nas janelas de verdade e troca o foco; no fim sai sem mexer nas janelas (como o `SIGUSR1`). O script começa da janela focada, então confira qual app está na frente antes. Funciona com o OmniWM aberto. No fim ele lê o frame real de cada janela e compara com o esperado (sai com código 2 se algo ficou fora do lugar). `./scripts/test.sh` roda os testes do layout. Um deles confere em todo frame de 6 animações que o espaço entre janelas é exatamente o `gap`.
 
-`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). No `--script`, `move-left` e `move-right` trocam a coluna focada de lugar, `stack-left` e `stack-right` empilham ou separam, `taller`, `shorter`, `up` e `down` são a altura e o foco na coluna, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
+`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). `NIRI_CLIPBOARD=<pasta>` liga o histórico do clipboard no teste, com outra pasta: `clipboard` no `--script` abre e fecha o painel, e `wait` é um passo sem ação (qualquer outro atalho fecha o painel). No `--script`, `move-left` e `move-right` trocam a coluna focada de lugar, `stack-left` e `stack-right` empilham ou separam, `taller`, `shorter`, `up` e `down` são a altura e o foco na coluna, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
 
 ## Limitações conhecidas
 

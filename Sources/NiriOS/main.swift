@@ -17,6 +17,7 @@ Atalhos: Option + / Option -   largura da coluna focada
          Option ↑ / ↓         foco na janela de cima / de baixo da coluna
          Option F             coluna em largura total (de novo: volta)
          Option D             mostra a mesa: as janelas saem pelas bordas (de novo: voltam)
+         Option V             histórico do que foi copiado: clique cola, o alfinete fixa
          Option 1 a 4         vai pro workspace; com Shift, manda a janela focada pra ele
 Config:  ~/.config/niri-os/config.json, ou pelo ícone na barra de menu. Salvar aplica na hora.
 """
@@ -37,6 +38,13 @@ if let name = value("--workspace") {
 }
 // O painel de configurações, aberto pelo ícone na barra de menu (ver `Settings`).
 if args.contains("--settings") { SettingsPanel.run() }
+// O histórico do Option+V (ver `Clipboard`): o painel, aberto no canto do mouse, e a leitura de cada cópia nova.
+if let x = value("--clipboard").flatMap(Double.init), let y = argv.last.flatMap(Double.init) {
+    ClipboardPanel.run(at: NSPoint(x: x, y: y))
+}
+if let id = value("--clipboard-read"), let count = argv.last.flatMap(Int.init) {
+    Clipboard.readProcess(id, expecting: count)
+}
 // O papel de parede, aberto pelo niri-os quando o config muda (ver `WallpaperArt`).
 if let path = value("--wallpaper") {
     WallpaperProcess.run(path, effect: argv.last.flatMap(WallpaperEffect.init) ?? .none)
@@ -82,12 +90,15 @@ let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow":
                                "move-left": .moveColumnLeft, "move-right": .moveColumnRight,
                                "stack-left": .consumeOrExpelLeft, "stack-right": .consumeOrExpelRight,
                                "taller": .growHeight, "shorter": .shrinkHeight, "up": .focusUp, "down": .focusDown,
-                               "full": .toggleFullWidth, "desktop": .toggleDesktop]
+                               "full": .toggleFullWidth, "desktop": .toggleDesktop, "clipboard": .clipboard]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
-dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action? in
+// `wait`: um passo sem ação (ex.: o painel do Option+V aberto, que qualquer outro atalho fecha).
+dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action?? in
+    if s == "wait" { return .some(nil) }
     if s.hasPrefix("ws:") { return .workspace(String(s.dropFirst(3))) }
     if s.hasPrefix("move:") { return .moveToWorkspace(String(s.dropFirst(5))) }
-    return names[String(s)]
+    guard let a = names[String(s)] else { return nil }
+    return a
 }
 
 // Dois gerenciadores mexendo nas mesmas janelas = briga a cada frame.
@@ -130,4 +141,6 @@ for sig in [SIGINT, SIGTERM, SIGHUP] {
 wm.start()
 // Teste (--pid, --script) não ganha ícone nem recarga: roda ao lado da instância de verdade.
 let settings = dev.pid == nil && dev.script.isEmpty ? Settings(wm: wm) : nil
+// No teste, só com outra pasta (`NIRI_CLIPBOARD`): o `clipboard` do --script abre e fecha o painel.
+if settings != nil || ProcessInfo.processInfo.environment["NIRI_CLIPBOARD"] != nil { wm.clipboard = Clipboard() }
 app.run()

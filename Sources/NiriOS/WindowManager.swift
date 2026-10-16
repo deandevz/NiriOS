@@ -7,7 +7,8 @@ import QuartzCore
 struct DevOptions {
     var pid: pid_t?
     var area: CGRect?
-    var script: [Action] = []
+    /// nil: um passo sem ação (`wait`).
+    var script: [Action?] = []
 }
 
 /// Dono do estado. Tudo aqui roda na main; chamadas de Acessibilidade vão pras filas dos apps.
@@ -65,6 +66,8 @@ final class WindowManager: NSObject {
     private var maxTickGap = 0.0
     /// Só na instância de verdade: teste (--pid, --script) não mexe no papel de parede.
     private var wallpaper: WallpaperHost?
+    /// O histórico do Option+V. Só na instância de verdade.
+    var clipboard: Clipboard?
     /// `niri-os --workspace <nome>` (o clique na SketchyBar, por exemplo) chega por aqui.
     static let workspaceRequest = Notification.Name("niri-os.workspace")
     private lazy var hotkeys: HotkeyTap = {
@@ -322,6 +325,7 @@ final class WindowManager: NSObject {
     /// Executa as ações do --script com 0,6 s entre elas, confere o resultado e sai.
     private func runScript() {
         for (i, action) in dev.script.enumerated() {
+            guard let action else { continue }
             // Experimento global: simula o Option descendo 100 ms antes, como numa tecla de verdade.
             if transition != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i + 1) - 0.1) { self.prefetchPhotos(true) }
@@ -521,6 +525,9 @@ final class WindowManager: NSObject {
     // MARK: - Ações
 
     private func perform(_ action: Action) {
+        // O histórico não mexe na fita: abre na hora, mesmo no meio de uma transição ou com a mesa à mostra.
+        if action == .clipboard { return clipboard?.toggle() ?? () }
+        clipboard?.close()
         guard global == nil else { queuedAction = action; return }  // roda quando a transição acabar
         let now = CACurrentMediaTime()
         if case .workspace(let name) = action, let k = workspaces.index(named: name) {
@@ -586,7 +593,7 @@ final class WindowManager: NSObject {
             withGlass(at: now) { workspaces.move(id, to: k, at: now) }  // empilhada, as da coluna crescem
             if verbose { log("ação \(action): janela \(id) foi pro workspace \(name)") }
             if let f = layout.focusedWindow { deferFocus(f) }
-        case .toggleDesktop, .workspace: break
+        case .toggleDesktop, .workspace, .clipboard: break
         }
         animate()
     }

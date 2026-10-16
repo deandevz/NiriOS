@@ -6,12 +6,15 @@ import os
 enum Action: Hashable {
     case grow, shrink, growHeight, shrinkHeight, focusLeft, focusRight, focusUp, focusDown, moveColumnLeft, moveColumnRight
     case consumeOrExpelLeft, consumeOrExpelRight, toggleFullWidth, toggleDesktop
+    /// Abre e fecha o histórico do que foi copiado (ver `Clipboard`).
+    case clipboard
     /// Vai pro workspace com esse nome / manda a janela focada pra ele.
     case workspace(String), moveToWorkspace(String)
 
     /// As ações de "shortcuts", na ordem do painel.
     static let allCases: [Action] = [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown,
-                                     .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop]
+                                     .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop,
+                                     .clipboard]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
