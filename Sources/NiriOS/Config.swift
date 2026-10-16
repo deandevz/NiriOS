@@ -5,7 +5,7 @@ import NiriCore
 /// Salvar o arquivo recarrega na hora (ver `Settings`).
 ///
 ///     { "gap": 12, "topPadding": 0, "defaultColumnWidth": 0.5, "widthStep": 0.1, "stiffness": 800,
-///       "shortcuts": { "grow": ["option+=", "ctrl+option+up"] }, "ghostBorderColor": "#FF8800",
+///       "shortcuts": { "grow": ["option+=", "ctrl+option+up"] }, "borderColor": "#FF8800",
 ///       "workspaces": ["1", "2", { "name": "T", "apps": ["WezTerm"] }] }
 enum ResizeStyle: String { case photos, ghost, live }
 
@@ -54,9 +54,10 @@ struct Config {
     var centerFocusedColumn: CenterMode = .always
     /// Atalhos por ação. Uma ação no config troca a lista inteira dela; lista vazia desliga.
     var shortcuts = Config.defaultShortcuts
-    /// Borda do vidro do resize fantasma. nil = cor de destaque do sistema.
-    var ghostBorderColor: NSColor?
-    var ghostBorderWidth: Double = 3
+    /// Borda da janela focada (ver `FocusBorder`), também em volta do vidro do resize. nil = cor de destaque do
+    /// sistema. Espessura em pt; 0 tira a borda.
+    var borderColor: NSColor?
+    var borderWidth: Double = 3
     /// Papel de parede (ver `WallpaperArt`): imagem, que vira o do macOS com `wallpaperEffect` aplicado, ou
     /// vídeo, que toca só com a mesa à mostra. nil = não mexe no do macOS (e devolve o de antes, se era nosso).
     var wallpaper: URL?
@@ -155,10 +156,11 @@ struct Config {
                 return true
             }
         }
-        if let s = obj["ghostBorderColor"] as? String, s != "accent" {
-            if let color = NSColor(hex: s) { c.ghostBorderColor = color } else { warn("ghostBorderColor '\(s)' inválida (use #RRGGBB, #RRGGBBAA ou accent)") }
+        // Antes de 2026-10-16 a borda era só do vidro do resize, com `ghostBorder*`: vale se a chave nova não está lá.
+        if let s = (obj["borderColor"] ?? obj["ghostBorderColor"]) as? String, s != "accent" {
+            if let color = NSColor(hex: s) { c.borderColor = color } else { warn("borderColor '\(s)' inválida (use #RRGGBB, #RRGGBBAA ou accent)") }
         }
-        if let v = num("ghostBorderWidth") { c.ghostBorderWidth = max(0, v) }
+        if let v = num("borderWidth") ?? num("ghostBorderWidth") { c.borderWidth = max(0, v) }
         if let s = obj["wallpaper"] as? String, !s.isEmpty {
             // Arquivo que sumiu (disco externo, por exemplo) fica no config: o processo avisa e não mexe em nada.
             let url = URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
@@ -173,7 +175,7 @@ struct Config {
             c.wallpaperEffect = .none
         }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "resizeStyle", "stiffness", "axTimeout",
-                          "centerFocusedColumn", "shortcuts", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange"]
+                          "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         if data != nil { log("config carregada de \(path.path)") }
         return c

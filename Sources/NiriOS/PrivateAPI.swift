@@ -42,6 +42,99 @@ enum Private {
         return (spaces as? [NSNumber])?.isEmpty == false
     }
 
+    private typealias ActiveSpaceFn = @convention(c) (Int32) -> UInt64
+    private static let activeSpace = symbol("SLSGetActiveSpace", in: skyLight, as: ActiveSpaceFn.self)
+
+    /// A janela está no Space da tela (e não numa tela cheia ou em outro desktop).
+    static func isOnActiveSpace(_ window: CGWindowID) -> Bool {
+        guard let mainConnection, let spacesForWindows, let activeSpace else { return true }
+        let spaces = spacesForWindows(mainConnection(), 7, [NSNumber(value: window)] as CFArray)?.takeRetainedValue()
+        return (spaces as? [NSNumber])?.contains { $0.uint64Value == activeSpace(mainConnection()) } ?? true
+    }
+
+    private typealias BoundsFn = @convention(c) (Int32, CGWindowID, UnsafeMutablePointer<CGRect>) -> Int32
+    private static let getBounds = symbol("SLSGetWindowBounds", in: skyLight, as: BoundsFn.self)
+
+    /// Onde a janela está pro WindowServer agora (coordenadas AX). Não fala com o app: ~0,02 ms.
+    static func bounds(_ window: CGWindowID) -> CGRect? {
+        guard let mainConnection, let getBounds else { return nil }
+        var r = CGRect.zero
+        return getBounds(mainConnection(), window, &r) == 0 ? r : nil
+    }
+
+    private typealias QueryFn = @convention(c) (Int32, CFArray, Int32) -> Unmanaged<CFTypeRef>?
+    private typealias IteratorFn = @convention(c) (CFTypeRef) -> Unmanaged<CFTypeRef>?
+    private typealias AdvanceFn = @convention(c) (CFTypeRef) -> Bool
+    private typealias RadiiFn = @convention(c) (CFTypeRef) -> Unmanaged<CFArray>?
+    private typealias TagsFn = @convention(c) (CFTypeRef) -> UInt64
+    private static let queryWindows = symbol("SLSWindowQueryWindows", in: skyLight, as: QueryFn.self)
+    private static let queryResult = symbol("SLSWindowQueryResultCopyWindows", in: skyLight, as: IteratorFn.self)
+    private static let advance = symbol("SLSWindowIteratorAdvance", in: skyLight, as: AdvanceFn.self)
+    private static let radii = symbol("SLSWindowIteratorGetCornerRadii", in: skyLight, as: RadiiFn.self)
+    private static let tags = symbol("SLSWindowIteratorGetTags", in: skyLight, as: TagsFn.self)
+
+    /// O que o WindowServer sabe da janela, numa consulta só (não fala com o app).
+    private static func query<T>(_ window: CGWindowID, _ read: (CFTypeRef) -> T?) -> T? {
+        guard let mainConnection, let queryWindows, let queryResult, let advance,
+              let query = queryWindows(mainConnection(), [NSNumber(value: window)] as CFArray, 1)?.takeRetainedValue(),
+              let iterator = queryResult(query)?.takeRetainedValue(), advance(iterator) else { return nil }
+        return read(iterator)
+    }
+
+    /// Raio do canto da janela, como o WindowServer recorta ela. Pergunta ao WindowServer, não ao app: 0,2 ms pra
+    /// 9 janelas, sem Gravação de Tela. Medido no macOS 26: Arc, Discord e Spotify 16, WhatsApp 26, Zed 12, WezTerm 0.
+    static func cornerRadius(_ window: CGWindowID) -> Double? {
+        query(window) { it in radii.flatMap { ($0(it)?.takeRetainedValue() as? [Double])?.first } }
+    }
+
+    /// A janela está indo pro Dock ou voltando dele. Medido com as tags do WindowServer a cada 5 ms: minimizando, 1 << 60
+    /// liga aos 24 ms (e fica ligado enquanto ela está no Dock) e 1 << 34 enquanto anima; voltando, 1 << 34 enquanto anima.
+    /// Os avisos com o número da janela (816, 815 e o da Acessibilidade) só chegam no fim da animação, ~550 ms depois.
+    static func isMinimizing(_ window: CGWindowID) -> Bool {
+        (query(window) { it in tags.map { $0(it) } } ?? 0) & (1 << 60 | 1 << 34) != 0
+    }
+
+    private typealias NotifyFn = @convention(c) (UInt32, UnsafeMutableRawPointer?, Int, UnsafeMutableRawPointer?) -> Void
+    private typealias RegisterFn = @convention(c) (Int32, NotifyFn, UInt32, UnsafeMutableRawPointer?) -> Int32
+    private typealias RequestFn = @convention(c) (Int32, UnsafeMutablePointer<CGWindowID>?, Int32) -> Int32
+    private static let register = symbol("SLSRegisterConnectionNotifyProc", in: skyLight, as: RegisterFn.self)
+    private static let request = symbol("SLSRequestNotificationsForWindows", in: skyLight, as: RequestFn.self)
+    private static var windowChanged: ((WindowEvent, CGWindowID) -> Void)?
+    private static let registered: Bool = {
+        guard let mainConnection, let register else { return false }
+        let notify: NotifyFn = { event, data, _, _ in
+            guard let data, let e = WindowEvent(rawValue: event) else { return }
+            Private.windowChanged?(e, data.load(as: CGWindowID.self))
+        }
+        return [806, 807, 815, 816, 1327, 1328].allSatisfy { register(mainConnection(), notify, $0, nil) == 0 }
+    }()
+
+    /// O dado de cada um é o número da janela, menos o das animações. `hidden`: medido fechando no X uma janela que o app
+    /// só esconde (como WhatsApp e Discord): ela continua existindo, com o mesmo frame, e só sai da tela. `animation*`:
+    /// começo e fim de uma animação do WindowServer (ir pro Dock e voltar dele), sem dizer de qual janela.
+    enum WindowEvent: UInt32 { case moved = 806, resized = 807, shown = 815, hidden = 816, animationStarted = 1327, animationEnded = 1328 }
+
+    /// Avisos do WindowServer quando `windows` mudam de lugar ou de tamanho, ou saem e voltam pra tela, na main, no
+    /// instante em que a mudança vale (não quando o app recebe o pedido). Cada chamada troca a lista. Medido com uma
+    /// janela movida via AX: o WindowServer só aplica 3 a 9 ms depois de o AX voltar, e o aviso chega logo depois disso.
+    static func watch(_ windows: [CGWindowID], onChange: @escaping (WindowEvent, CGWindowID) -> Void) {
+        guard let mainConnection, let request, registered else { return }
+        windowChanged = onChange
+        var list = windows
+        _ = list.withUnsafeMutableBufferPointer { request(mainConnection(), $0.baseAddress, Int32($0.count)) }
+    }
+
+    private typealias OrderedInFn = @convention(c) (Int32, CGWindowID, UnsafeMutablePointer<UInt8>) -> Int32
+    private static let orderedIn = symbol("SLSWindowIsOrderedIn", in: skyLight, as: OrderedInFn.self)
+
+    /// A janela está na tela pro WindowServer (estacionada com 1 pt conta). Fechada no X por app que só esconde, não.
+    /// ~0,08 ms.
+    static func isOrderedIn(_ window: CGWindowID) -> Bool {
+        guard let mainConnection, let orderedIn else { return true }
+        var v: UInt8 = 1
+        return orderedIn(mainConnection(), window, &v) != 0 || v != 0
+    }
+
     /// Foto da janela inteira de outro app, mesmo fora da tela. Precisa de Gravação de Tela.
     /// Opções: 1<<11 ignora o recorte global, 1<<8 resolução Retina, 1<<15 a janela toda (sem ela
     /// só vem a parte visível). Medido: 10 a 60 ms; a ScreenCaptureKit leva ~95 ms.
@@ -64,6 +157,13 @@ enum Private {
     static func captureShown(_ window: CGWindowID, in rect: CGRect) -> CGImage? {
         // kCGWindowListOptionOnScreenBelowWindow | kCGWindowListOptionIncludingWindow
         listImage?(rect, 4 | 8, window, 0)?.takeRetainedValue()
+    }
+
+    /// `rect` da tela só com a janela, sem sombra, em resolução Retina, com a transparência dela. Só a parte que
+    /// está na tela: estacionada, vem vazia. ~10 a 35 ms pra 48 pt.
+    static func captureAlone(_ window: CGWindowID, in rect: CGRect) -> CGImage? {
+        // kCGWindowListOptionIncludingWindow; kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution
+        listImage?(rect, 8, window, 1 | 8)?.takeRetainedValue()
     }
 
     private typealias ArrayImageFn = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?

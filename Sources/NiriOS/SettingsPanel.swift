@@ -116,8 +116,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         guard Config.save(["shortcuts": overridden.isEmpty ? nil : overridden,
                            "workspaces": workspaces as? [String] == ["1", "2", "3", "4"] ? nil : workspaces,
-                           "ghostBorderColor": m.accent ? nil : m.color.hex,
-                           "ghostBorderWidth": m.width == 3 ? nil : m.width,
+                           "borderColor": m.accent ? nil : m.color.hex,
+                           "borderWidth": m.width == 3 ? nil : m.width,
+                           "ghostBorderColor": nil, "ghostBorderWidth": nil,  // os nomes de antes
                            "wallpaper": m.wallpaper.map { ($0.path as NSString).abbreviatingWithTildeInPath },
                            "wallpaperEffect": m.effect == .none ? nil : m.effect.rawValue]) else {
             m.saveError = "Não salvei: o config.json não é um JSON válido. Corrija ou apague o arquivo."
@@ -381,9 +382,9 @@ struct AppRef {
         shortcuts = c.shortcuts
         workspaces = c.workspaces
         selected = c.workspaces.first?.name
-        accent = c.ghostBorderColor == nil
-        if let col = c.ghostBorderColor { color = col }
-        width = c.ghostBorderWidth
+        accent = c.borderColor == nil
+        if let col = c.borderColor { color = col }
+        width = c.borderWidth
         warnings = c.warnings
         wallpaper = c.wallpaper
         effect = c.wallpaperEffect
@@ -605,7 +606,7 @@ private struct WallpaperTab: View {
     }
 }
 
-/// A borda do vidro do resize.
+/// A borda da janela focada, que também contorna o vidro do resize.
 private struct BorderTab: View {
     let panel: PanelController
 
@@ -629,6 +630,9 @@ private struct BorderTab: View {
                         Text(String(format: "%.1f pt", model.width)).monospacedDigit().frame(width: 48, alignment: .trailing)
                     }
                 }
+            } footer: {
+                Text("Em volta da janela focada e do vidro do resize, com o canto de cada app. 0 tira a borda.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -761,18 +765,18 @@ private struct WallpaperPreview: View {
     }
 }
 
-/// O vidro de verdade (o mesmo `NSVisualEffectView` do resize) sobre o papel de parede da tela.
+/// O vidro de verdade (o mesmo do resize, com a borda da janela focada) sobre o papel de parede da tela.
 private struct GlassPreview: NSViewRepresentable {
     let color: NSColor?
     let width: Double
 
     final class Backdrop: NSView {
-        let glass: NSVisualEffectView
+        let glass: Glass
 
         init() {
             let icon = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app")
-            glass = GhostOverlay.glass(CGRect(x: 0, y: 0, width: 200, height: 120), icon: icon, iconSize: 56, border: (nil, 3))
-            glass.blendingMode = .withinWindow  // desfoca o papel de parede desta janela, não a tela atrás
+            glass = Glass(CGRect(x: 0, y: 0, width: 200, height: 120), icon: icon, iconSize: 56, radius: 16, border: (nil, 3))
+            glass.effect.blendingMode = .withinWindow  // desfoca o papel de parede desta janela, não a tela atrás
             super.init(frame: .zero)
             wantsLayer = true
             layer?.contentsGravity = .resizeAspectFill
@@ -785,7 +789,7 @@ private struct GlassPreview: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            glass.frame = bounds.insetBy(dx: bounds.width * 0.2, dy: 24)
+            glass.windowFrame = bounds.insetBy(dx: bounds.width * 0.2, dy: 24)
         }
 
         /// Miniatura de 1000 px: o papel de parede 4K decodificado inteiro teria 33 MB.
@@ -800,7 +804,6 @@ private struct GlassPreview: NSViewRepresentable {
     func makeNSView(context: Context) -> Backdrop { Backdrop() }
 
     func updateNSView(_ v: Backdrop, context: Context) {
-        v.glass.layer?.borderWidth = width
-        v.glass.layer?.borderColor = (color ?? .controlAccentColor).cgColor
+        v.glass.border = (color, width)
     }
 }

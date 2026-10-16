@@ -44,6 +44,10 @@ final class WindowManager: NSObject {
         let left: CGWindowID?, right: CGWindowID?, column: Column
     }
     private var away: [CGWindowID: Away] = [:]
+    /// Janelas que o WindowServer avisou que saíram da tela (evento 816; ver `windowEvent`). Fechada no X por app
+    /// que só esconde (WhatsApp, Discord) some da lista do app mas continua "num Space" (medido), e ficava na fita como
+    /// se estivesse em outro desktop: um buraco entre as vizinhas.
+    private var orderedOut: Set<CGWindowID> = []
     /// A janela que ficou com o teclado quando a tela foi pra um workspace vazio (o macOS não tira o foco dela).
     /// Aviso dela não leva de volta: visto no uso, 1,5 s depois de ir pro 4 vazio o King Bot e o WhatsApp
     /// avisavam foco de novo e a tela voltava sozinha. Pra voltar, o atalho.
@@ -96,14 +100,15 @@ final class WindowManager: NSObject {
         return (area, toAX(screen.frame))
     }
 
-    /// Config recarregada (arquivo salvo ou painel). Atalhos, borda do vidro e regras de app valem na hora; gap,
+    /// Config recarregada (arquivo salvo ou painel). Atalhos, borda e regras de app valem na hora; gap,
     /// margens, mola, centralização e a lista de workspaces animam as janelas pro layout novo. `resizeStyle` e
     /// `axTimeout` só ao reiniciar.
     func apply(_ c: Config) {
         let old = config
         config = c
         hotkeys.setShortcuts(c.shortcuts)
-        ghost?.border = (c.ghostBorderColor, c.ghostBorderWidth)
+        ghost?.border = (c.borderColor, c.borderWidth)
+        border?.style = (c.borderColor, c.borderWidth)
         wallpaper?.apply(c)
         if c.resizeStyle != old.resizeStyle || c.axTimeout != old.axTimeout {
             log("config: resizeStyle e axTimeout mudam só ao reiniciar o niri-os")
@@ -144,6 +149,9 @@ final class WindowManager: NSObject {
         self.link = link
         _ = transition  // a janela da transição já fica pronta na tela, vazia
         _ = ghost
+        border = FocusBorder()
+        border?.style = (config.borderColor, config.borderWidth)
+        border?.onShow = { [weak self] id in self?.ghost?.ring = id }
         if dev.pid == nil && dev.script.isEmpty {
             wallpaper = WallpaperHost()
             wallpaper?.apply(config)
@@ -165,6 +173,7 @@ final class WindowManager: NSObject {
             // Rescan aqui também: se algum evento de janela se perdeu, ativar o app corrige.
             self?.workers[app.processIdentifier]?.requestScan()
             self?.workers[app.processIdentifier]?.reportFocusedWindow()
+            self?.updateBorder()
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.screenChanged()
@@ -173,6 +182,8 @@ final class WindowManager: NSObject {
         // sem reler, a janela que saiu da tela cheia ficava solta por cima ou por trás da fita até ser
         // minimizada. Relê de novo 0,5 s depois, quando a animação de saída do macOS já acabou.
         ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.borderSpace = nil
+            self?.updateBorder()
             self?.rescanAll()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.rescanAll() }
         }
@@ -353,7 +364,11 @@ final class WindowManager: NSObject {
         // outro Space (a pessoa foi pra uma tela cheia ou outro desktop), não fechada: fica na fita. Sem isso,
         // ir pra outro Space tirava uma janela de cada app, e na volta elas entravam como novas: fora do lugar,
         // com 50% de largura e no workspace da regra (o Zed voltou do 4 pro 3; visto no uso em 2026-10-16).
-        let removed = known.subtracting(current).subtracting(uncertain).filter { listed.contains($0) || !Private.isOnAnySpace($0) }
+        // Escondida (aviso do WindowServer e fora da tela agora) também saiu: o Space dela continua lá.
+        let gone = known.subtracting(current).subtracting(uncertain)
+        let hidden = gone.filter { orderedOut.contains($0) && !Private.isOrderedIn($0) }
+        let removed = gone.filter { listed.contains($0) || !Private.isOnAnySpace($0) }.union(hidden)
+        orderedOut = orderedOut.filter { tracked[$0] != nil && !removed.contains($0) }
         let wasFocused = layout.focusedWindow
         var changed = false
 
@@ -361,12 +376,13 @@ final class WindowManager: NSObject {
         // A focada foi pra tela cheia: a pessoa está nela, num Space à parte. Focar a vizinha tirava ela de lá.
         let toFullScreen = windows.contains { $0.fullScreen && $0.id == wasFocused }
         for id in removed {
-            // Ainda na lista do app (tela cheia, minimizada, app escondido): guarda onde estava pra volta.
+            // Ainda na lista do app (tela cheia, minimizada, app escondido) ou escondida no X: guarda onde estava pra
+            // volta, como a minimizada.
             let k = workspaces.index(of: id), cols = k.map { workspaces[$0].windows } ?? [], i = cols.firstIndex(of: id)
             if k == workspaces.active { lastVanish = now }
             tracked[id] = nil
             let column = workspaces.remove(id, at: now)
-            if listed.contains(id), let k, let i, let column {
+            if listed.contains(id) || hidden.contains(id), let k, let i, let column {
                 away[id] = Away(pid: pid, workspace: workspaces.names[k], left: i > 0 ? cols[i - 1] : nil,
                                 right: i + 1 < cols.count ? cols[i + 1] : nil, column: column)
             }
@@ -411,6 +427,7 @@ final class WindowManager: NSObject {
     }
 
     private func focusChanged(_ pid: pid_t, _ id: CGWindowID) {
+        defer { updateBorder() }  // o teclado pode ter ido pra um diálogo, fora da fita
         let changed = appFocus[pid] != id
         appFocus[pid] = id
         let now = CACurrentMediaTime()
@@ -626,11 +643,12 @@ final class WindowManager: NSObject {
         let ticket = prefetchVersion, version = layoutVersion
         let screen = layout.bounds.insetBy(dx: 2, dy: 0), bounds = layout.bounds
         let visible = layout.frames(at: CACurrentMediaTime()).filter { tracked[$0.window] != nil && $0.rect.intersects(screen) }
+        let skip = Set(visible.map(\.window) + [border?.windowID].compactMap { $0 })  // a borda some durante a transição
         DispatchQueue.global(qos: .userInteractive).async {
             var photos: [CGWindowID: TransitionOverlay.Photo] = [:]
             for f in visible { photos[f.window] = TransitionOverlay.photo(f.window, at: f.rect, screen: bounds) }
             // Fundo sem as visíveis: vale se a tecla não trouxer pra tela uma estacionada.
-            let background = TransitionOverlay.captureBackground(below: below, drawn: Set(visible.map(\.window)), in: bounds)
+            let background = TransitionOverlay.captureBackground(below: below, drawn: skip, in: bounds)
             DispatchQueue.main.async {
                 guard ticket == self.prefetchVersion, version == self.layoutVersion else { return }
                 self.prefetched = (version, photos, background)
@@ -657,14 +675,15 @@ final class WindowManager: NSObject {
         ids.removeAll { $0 == id }
         ids.append(id)  // a que muda de tamanho fica por cima
         global = Global(windows: ids, morph: id, action: action, t0: now)
+        updateBorder()
         let ready = prefetched.flatMap { $0.version == layoutVersion ? $0 : nil }
         prefetched = nil
-        let bounds = layout.bounds, below = transition.windowID
+        let bounds = layout.bounds, below = transition.windowID, skip = Set(ids + [border?.windowID].compactMap { $0 })
         DispatchQueue.global(qos: .userInteractive).async {
             // O que não veio da foto antecipada é tirado agora (20 a 35 ms cada; em paralelo não acelera).
             let photos = ids.map { ready?.photos[$0] ?? TransitionOverlay.photo($0, at: start[$0]!, screen: bounds) }
             let background = ready.flatMap { Set($0.photos.keys) == Set(ids) ? $0.background : nil }
-                ?? TransitionOverlay.captureBackground(below: below, drawn: Set(ids), in: bounds)
+                ?? TransitionOverlay.captureBackground(below: below, drawn: skip, in: bounds)
             let tCaptured = CACurrentMediaTime()
             DispatchQueue.main.async {
                 let tMain = CACurrentMediaTime()
@@ -793,6 +812,7 @@ final class WindowManager: NSObject {
                         self.transition?.setShown(shown)
                         self.transition?.hide {
                             self.global = nil
+                            self.updateBorder()
                             if let a = self.queuedAction { self.queuedAction = nil; self.perform(a) }
                             // Option ainda apertado: a próxima tecla provavelmente é outro +/-.
                             else if self.modifiersHeld { self.prefetchPhotos(true) }
@@ -808,7 +828,7 @@ final class WindowManager: NSObject {
     private lazy var ghost: GhostOverlay? = {
         guard config.resizeStyle == .ghost else { return nil }
         let g = GhostOverlay(screen: NSScreen.screens[0])
-        g.border = (config.ghostBorderColor, config.ghostBorderWidth)
+        g.border = (config.borderColor, config.borderWidth)
         return g
     }()
     /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
@@ -821,7 +841,7 @@ final class WindowManager: NSObject {
         resize(&layout, action, at: now)
         guard let ghost, let id, let t = tracked[id], let to = finalFrame(id), to.size != before?.size,
               let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
-        ghost.show(id, of: t.pid, at: r)
+        ghost.show(id, of: t.pid, at: r, radius: border?.cornerRadius(of: id) ?? 16)
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
         workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: to.width < r.width ? to.size : nil)
@@ -843,11 +863,24 @@ final class WindowManager: NSObject {
                 continue
             }
             w.attach(id, at: r) {
-                self.whenDrawn(id, width: r.width) {
+                var finished = false
+                let finish = {
+                    guard !finished else { return }
+                    finished = true
                     // Alguns apps ainda se reorganizam depois de 50 ms parados, e isso aparecia no fade.
                     DispatchQueue.main.asyncAfter(deadline: .now() + GhostOverlay.hold) {
                         if !self.ghosted.contains(id) { self.ghost?.fadeOut(id) }  // senão outra tecla escondeu de novo
                     }
+                }
+                self.whenDrawn(id, width: r.width, done: finish)
+                // A captura passa pelo replayd e pode não voltar: com dois niri-os rodando do mesmo arquivo, a do
+                // segundo nunca voltou (visto em 2026-10-16), e o vidro ficava pra sempre em cima da janela. Passado
+                // o prazo, o vidro sai e as capturas param (espera fixa, como sem Gravação de Tela).
+                DispatchQueue.main.asyncAfter(deadline: .now() + GhostOverlay.maxWait + 0.25) {
+                    guard !finished else { return }
+                    log("vidro: a captura da janela não voltou; sem captura até reiniciar")
+                    self.canCapture = false
+                    finish()
                 }
             }
         }
@@ -918,6 +951,44 @@ final class WindowManager: NSObject {
         }
     }
 
+    // MARK: - Borda da janela focada (ver FocusBorder)
+
+    private var border: FocusBorder?
+    /// Se a focada está no Space da tela, relido quando ela muda ou o Space muda (~0,3 ms cada).
+    private var borderSpace: (window: CGWindowID, onSpace: Bool)?
+    /// As janelas da fita cujos avisos o WindowServer manda (ver `windowEvent`).
+    private var watched: Set<CGWindowID> = []
+
+    /// Aviso do WindowServer de uma janela da fita: mudou de lugar, de tamanho, saiu ou voltou pra tela. A borda segue
+    /// a dela. Saiu da tela: relê o app, porque fechada no X por app que só esconde não manda aviso de Acessibilidade
+    /// (e o app passa o foco pra outra janela antes de esconder, então não dá pra ouvir só a da borda).
+    private func windowEvent(_ event: Private.WindowEvent, _ id: CGWindowID) {
+        border?.windowChanged(event, id)
+        guard event == .hidden, let t = tracked[id] else { return }
+        orderedOut.insert(id)
+        workers[t.pid]?.requestScan()
+    }
+
+    /// A borda vai na focada da fita quando o teclado está nela ou vai estar (foco adiado pro fim da animação, ou
+    /// pedido há pouco). Sem borda: teclado em outro app (clique na mesa, o painel) ou numa janela de fora da fita
+    /// (diálogo, ajustes de um app), focada em outro Space (tela cheia, outro desktop), mesa à mostra e transição por
+    /// fotos (que fotografa a tela). Por frame não roda: a borda anda sozinha pelos avisos do WindowServer.
+    private func updateBorder() {
+        guard let border else { return }
+        if watched.count != tracked.count || !tracked.keys.allSatisfy(watched.contains) {
+            watched = Set(tracked.keys)
+            Private.watch(Array(watched)) { [weak self] in self?.windowEvent($0, $1) }
+        }
+        let now = CACurrentMediaTime(), f = layout.focusedWindow
+        if let f, borderSpace?.window != f { borderSpace = (f, Private.isOnActiveSpace(f)) }
+        let keyboard = NSWorkspace.shared.frontmostApplication.flatMap { appFocus[$0.processIdentifier] }
+        let coming = deferredFocus != nil || pendingFocus.map { now - $0.time < 0.6 } == true
+        let show = f != nil && borderSpace?.onSpace != false && !layout.showsDesktop && global == nil
+            && (dev.pid != nil || coming || keyboard == f)
+        border.follow(show ? f : nil)
+        ghost?.focus(f)
+    }
+
     // MARK: - Animação
 
     private func animate() {
@@ -925,6 +996,7 @@ final class WindowManager: NSObject {
         scheduleSave()
         // O vídeo do papel de parede toca só com a mesa à mostra; com janela na tela ele para.
         if started { wallpaper?.desktopShown(layout.showsDesktop || layout.windows.isEmpty) }
+        updateBorder()
         guard let link else { return }
         if link.isPaused {
             animationStart = CACurrentMediaTime()
@@ -998,6 +1070,7 @@ final class WindowManager: NSObject {
     private func verifyPlacement(after wait: Double) {
         DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
             guard let self, self.link?.isPaused == true else { return }
+            if self.border?.refresh() == true, self.verbose { log("borda: fora do lugar na conferência (aviso do WindowServer perdido?)") }
             for w in self.workers.values {
                 w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
             }
@@ -1074,6 +1147,9 @@ final class WindowManager: NSObject {
         guard ticks > 1 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             var parts = [String(format: "animação %.0f ms, %d ticks, maior intervalo %.1f ms", duration * 1000, ticks, maxTickGap * 1000)]
+            if let b = self.border?.takeStats(), b.moves > 0 {
+                parts.append(String(format: "borda: %d mudanças, maior custo %.2f ms", b.moves, b.maxCost * 1000))
+            }
             for w in self.workers.values.sorted(by: { $0.name < $1.name }) {
                 let s = w.takeStats()
                 guard s.frames > 0 else { continue }
@@ -1135,6 +1211,7 @@ final class WindowManager: NSObject {
     /// Ao sair: tira as janelas da borda e devolve todas pra dentro da tela, em cascata (as de todos os workspaces).
     func shutdown() {
         saveState()
+        border?.follow(nil)
         link?.isPaused = true
         let area = layout.area
         let frames = workspaces.frames(at: CACurrentMediaTime())

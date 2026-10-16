@@ -3,7 +3,7 @@ import NiriCore
 import QuartzCore
 
 /// Janela nossa por cima das outras, na tela toda, transparente, sem clique e sem foco.
-private func overlayPanel(_ screen: NSScreen) -> NSPanel {
+func overlayPanel(_ screen: NSScreen) -> NSPanel {
     // Painel que não ativa o app: com NSWindow comum o macOS ativava o niri-os ao abrir (roubava o
     // foco do teclado e o foco inicial da fita caía na 1ª coluna).
     let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -40,9 +40,17 @@ final class GhostOverlay {
     static let optionIdle = 0.5
     private let window: NSPanel
     private let screenHeight: Double
-    private var glass: [CGWindowID: NSVisualEffectView] = [:]
-    /// Cor (nil = destaque do sistema) e espessura da borda. Vale pro próximo vidro.
-    var border: (color: NSColor?, width: Double) = (nil, 3)
+    private var glass: [CGWindowID: Glass] = [:]
+    /// A borda da janela focada (ver `FocusBorder`). Vale na hora, também pros vidros na tela.
+    var border: (color: NSColor?, width: Double) = (nil, 3) {
+        didSet { for g in glass.values { g.border = border } }
+    }
+    /// Só o vidro da janela focada leva a borda: com `Option .` no meio do resize ela vai pra vizinha.
+    private var focused: CGWindowID? { didSet { if focused != oldValue { restyle() } } }
+    /// A janela em volta da qual a `FocusBorder` está visível. O vidro dela fica sem borda: a janela já voltou por
+    /// baixo, e a borda do vidro, que segue o frame calculado, andaria na frente da janela real (3 a 9 ms) se outra
+    /// animação começasse durante o fade. A troca entre as duas é no mesmo commit do CA: nunca as duas, nunca nenhuma.
+    var ring: CGWindowID? { didSet { if ring != oldValue { restyle() } } }
 
     init(screen: NSScreen) {
         screenHeight = screen.frame.height
@@ -55,62 +63,101 @@ final class GhostOverlay {
         CGRect(x: r.minX, y: screenHeight - r.maxY, width: r.width, height: r.height)
     }
 
-    /// Vidro no lugar da janela, com o ícone do app no meio. Se ele estava sumindo (outra tecla logo
-    /// depois), volta inteiro.
-    func show(_ id: CGWindowID, of pid: pid_t, at r: CGRect) {
-        let v = glass[id] ?? makeGlass(flip(r), icon: NSRunningApplication(processIdentifier: pid)?.icon)
-        glass[id] = v
-        v.layer?.removeAllAnimations()
-        v.alphaValue = 1
-        v.frame = flip(r)
+    /// Vidro no lugar da janela, com o ícone do app no meio e o canto dela. Se ele estava sumindo (outra
+    /// tecla logo depois), volta inteiro.
+    func show(_ id: CGWindowID, of pid: pid_t, at r: CGRect, radius: Double) {
+        let g = glass[id] ?? makeGlass(id, at: flip(r), radius: radius, icon: NSRunningApplication(processIdentifier: pid)?.icon)
+        glass[id] = g
+        g.layer?.removeAllAnimations()
+        g.alphaValue = 1
+        g.windowFrame = flip(r)
     }
 
-    private func makeGlass(_ frame: CGRect, icon: NSImage?) -> NSVisualEffectView {
-        let v = Self.glass(frame, icon: icon, border: border)
-        window.contentView!.addSubview(v)
-        return v
+    private func makeGlass(_ id: CGWindowID, at r: CGRect, radius: Double, icon: NSImage?) -> Glass {
+        let g = Glass(r, icon: icon, radius: radius, border: border)
+        g.bordered = id == focused && id != ring
+        window.contentView!.addSubview(g)
+        return g
     }
 
-    /// O vidro. Também é a prévia do painel de configurações, com `.withinWindow` no lugar de `.behindWindow`.
-    static func glass(_ frame: CGRect, icon: NSImage?, iconSize s: Double = 96, border: (color: NSColor?, width: Double)) -> NSVisualEffectView {
-        let v = NSVisualEffectView(frame: frame)
-        if let icon {
-            // Margens elásticas iguais: o AppKit divide a mudança de tamanho entre elas e o ícone fica
-            // no meio a cada frame, sem código nosso por tick.
-            let i = NSImageView(frame: CGRect(x: (frame.width - s) / 2, y: (frame.height - s) / 2, width: s, height: s))
-            i.image = icon
-            i.imageScaling = .scaleProportionallyUpOrDown
-            i.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-            v.addSubview(i)
-        }
-        v.material = .hudWindow  // o mesmo desfoque da prévia do Loop
-        v.blendingMode = .behindWindow
-        v.state = .active
-        v.wantsLayer = true
-        v.layer?.cornerRadius = 16  // canto das janelas no macOS 26 (o Loop usa o mesmo)
-        v.layer?.masksToBounds = true
-        v.layer?.borderWidth = border.width
-        v.layer?.borderColor = (border.color ?? .controlAccentColor).cgColor
-        return v
+    func focus(_ id: CGWindowID?) { focused = id }
+
+    private func restyle() {
+        for (w, g) in glass { g.bordered = w == focused && w != ring }
     }
 
     /// A cada frame: o vidro segue a janela dele na fita.
     func update(_ frames: [WindowFrame]) {
         guard !glass.isEmpty else { return }
-        for f in frames { glass[f.window]?.frame = flip(f.rect) }
+        for f in frames { glass[f.window]?.windowFrame = flip(f.rect) }
     }
 
     func fadeOut(_ id: CGWindowID) {
-        guard let v = glass[id] else { return }
+        guard let g = glass[id] else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = Self.fade
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            v.animator().alphaValue = 0
+            g.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            guard let self, v.alphaValue == 0, glass[id] === v else { return }  // voltou no meio do fade
-            v.removeFromSuperview()
+            guard let self, g.alphaValue == 0, glass[id] === g else { return }  // voltou no meio do fade
+            g.removeFromSuperview()
             glass[id] = nil
         })
+    }
+}
+
+/// O vidro: desfoque com o ícone do app no meio, no canto da janela, e a borda da janela focada por fora, igual à da
+/// `FocusBorder`. Quando a janela volta por baixo, a borda dela fica exatamente embaixo da do vidro, e o vidro some sem
+/// emenda. Também é a prévia da aba Borda do painel.
+final class Glass: NSView {
+    let effect: NSVisualEffectView
+    /// Canto da janela (pt).
+    var radius = 16.0 { didSet { restyle() } }
+    var border: (color: NSColor?, width: Double) = (nil, 3) { didSet { restyle() } }
+    var bordered = true { didSet { restyle() } }
+    /// O lugar da janela (coordenadas do AppKit). A borda fica por fora.
+    var windowFrame = CGRect.zero {
+        didSet { frame = windowFrame.insetBy(dx: -border.width, dy: -border.width) }
+    }
+
+    init(_ windowFrame: CGRect, icon: NSImage?, iconSize s: Double = 96, radius: Double, border: (color: NSColor?, width: Double)) {
+        self.windowFrame = windowFrame
+        self.radius = radius
+        self.border = border
+        effect = NSVisualEffectView(frame: CGRect(origin: .zero, size: windowFrame.size))
+        super.init(frame: windowFrame)
+        if let icon {
+            // Margens elásticas iguais: o AppKit divide a mudança de tamanho entre elas e o ícone fica
+            // no meio a cada frame, sem código nosso por tick.
+            let i = NSImageView(frame: CGRect(x: (windowFrame.width - s) / 2, y: (windowFrame.height - s) / 2, width: s, height: s))
+            i.image = icon
+            i.imageScaling = .scaleProportionallyUpOrDown
+            i.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+            effect.addSubview(i)
+        }
+        effect.material = .hudWindow  // o mesmo desfoque da prévia do Loop
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.masksToBounds = true
+        effect.layer?.cornerCurve = .continuous
+        effect.autoresizingMask = [.width, .height]  // a borda em volta fica igual a cada frame, sem código por tick
+        addSubview(effect)
+        wantsLayer = true
+        layer?.cornerCurve = .continuous
+        restyle()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    private func restyle() {
+        let w = border.width
+        frame = windowFrame.insetBy(dx: -w, dy: -w)
+        effect.frame = bounds.insetBy(dx: w, dy: w)
+        effect.layer?.cornerRadius = radius
+        layer?.cornerRadius = radius + w
+        layer?.borderWidth = bordered ? w : 0
+        layer?.borderColor = (border.color ?? .controlAccentColor).cgColor
     }
 }
 
