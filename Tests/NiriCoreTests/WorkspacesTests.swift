@@ -76,29 +76,57 @@ private func run(_ w: inout Workspaces, from t0: Double = 0) -> [[WindowFrame]] 
     }
 }
 
-/// Coluna só em parte na tela (2/3 + 1/2 passa da borda): fica escondida durante a troca, nos dois sentidos, e
-/// volta pro lugar quando ela acaba.
-@Test func partlyVisibleColumnHidesDuringSwitch() {
-    var w = Workspaces(names: ["2", "T"], area: area, bounds: bounds, config: LayoutConfig())
-    w[0].append(1, proportion: 2.0 / 3)
-    w[0].append(2, proportion: 0.5)
-    w[1].append(11, proportion: 0.5)
-    for i in 0..<2 { w[i].retarget(at: 0) }
-    w.snapToTargets()
-    let before = rect(w.frames(at: 0), 2)
-    #expect(!parked(before) && before.maxX > bounds.maxX)  // o pedaço que passa da borda
-    for k in [1, 0] {
+/// Coluna só em parte na tela, passando da borda `side`: desliza colada na vizinha `pair` a troca inteira, nos
+/// dois sentidos (antes sumia na troca e aparecia no fim, o WhatsApp ao lado do Discord de 2/3), sem sobrepor
+/// nada na tela. `far`, fora da viewport, fica estacionada o tempo todo. No fim, tudo volta pro lugar.
+private func checkPartlyVisibleColumnSlides(_ w: inout Workspaces, from k0: Int, to k1: Int,
+                                            pair: (WindowID, WindowID), partial: WindowID, far: WindowID) {
+    let before = w.frames(at: 0)
+    let p = rect(before, partial)
+    #expect(!parked(p) && (p.minX < bounds.minX || p.maxX > bounds.maxX))  // o pedaço que passa da borda
+    for k in [k1, k0] {
         w.switchTo(k, at: 0)
         let frames = run(&w)
-        for f in frames.dropFirst().dropLast() {
-            #expect(parked(rect(f, 2)), "coluna em parte na tela andou com a troca: \(rect(f, 2))")
+        for f in frames {
+            let a = rect(f, pair.0), b = rect(f, pair.1)
+            if !parked(a) && !parked(b) { #expect(b.minX - a.maxX == 12, "a coluna em parte na tela descolou da vizinha: \(a) e \(b)") }
+            #expect(parked(rect(f, far)), "a coluna fora da viewport entrou na tela: \(rect(f, far))")
             let shown = f.map(\.rect).filter { !parked($0) }
             for (i, a) in shown.enumerated() {
                 for b in shown[(i + 1)...] { #expect(a.intersection(b).width <= 0, "sobreposição: \(a) e \(b)") }
             }
         }
+        #expect(frames.filter { !parked(rect($0, partial)) }.count > frames.count / 2, "a coluna em parte na tela sumiu na troca")
     }
-    #expect(rect(w.frames(at: 0), 2) == before)
+    #expect(w.frames(at: 0) == before)
+}
+
+/// O 2 do uso: Discord de 2/3 focado e WhatsApp de largura total passando da borda direita, mais uma coluna
+/// fora da viewport. O 2 sai pela esquerda e volta por ela.
+@Test func partlyVisibleColumnOnTheRightSlidesWithItsStrip() {
+    var w = Workspaces(names: ["2", "T"], area: area, bounds: bounds, config: LayoutConfig())
+    w[0].append(1, proportion: 2.0 / 3)
+    w[0].append(2, proportion: 1)
+    w[0].append(3, proportion: 0.5)
+    w[1].append(11, proportion: 1)
+    for i in 0..<2 { w[i].retarget(at: 0) }
+    w.snapToTargets()
+    checkPartlyVisibleColumnSlides(&w, from: 0, to: 1, pair: (1, 2), partial: 2, far: 3)
+}
+
+/// Espelho: a focada é a última, a do lado passa da borda esquerda e outra está fora da viewport à esquerda. O
+/// workspace sai pela direita e volta por ela (o pedaço escondido aparece ao andar pra direita).
+@Test func partlyVisibleColumnOnTheLeftSlidesWithItsStrip() {
+    var w = Workspaces(names: ["1", "2"], area: area, bounds: bounds, config: LayoutConfig())
+    w[0].append(1, proportion: 1)
+    w[1].append(11, proportion: 0.5)
+    w[1].append(12, proportion: 1)
+    w[1].append(13, proportion: 2.0 / 3)
+    w[1].focus(13, at: 0)
+    for i in 0..<2 { w[i].retarget(at: 0) }
+    w.switchTo(1, at: 0)
+    w.snapToTargets()
+    checkPartlyVisibleColumnSlides(&w, from: 1, to: 0, pair: (12, 13), partial: 12, far: 11)
 }
 
 /// Do 1 pro 3, o 2 não atravessa a tela; voltando pro 2, ele entra pela esquerda.

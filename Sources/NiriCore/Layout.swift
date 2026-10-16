@@ -342,24 +342,39 @@ public struct Layout {
         let left = k > 0 ? p * max(0, xs[k - 1].x + xs[k - 1].w - bounds.minX - config.sliver) : 0
         let right = k < xs.count ? p * max(0, bounds.maxX - config.sliver - xs[k].x) : 0
         let s = shift.value(at: t)
+        // Fita parada fora da tela (outro workspace): tudo estacionado, mesmo que ela tenha mudado depois de sair
+        // (janela nova, largura nova) e o deslocamento da troca já não baste pra tirar tudo da tela.
+        let away = shift.target != 0 && shift.isSettled(at: t)
         return zip(columns, xs).enumerated().map { i, cx in
             let (c, (x, w)) = cx
             // Fora da viewport: encosta na borda da tela com `sliver` pt visíveis.
             // Como é um clamp, a janela sai da borda de forma contínua quando a fita rola.
             let lo = bounds.minX - w + config.sliver, hi = bounds.maxX - config.sliver
             var sx = min(max(x + (i < k ? -left : right), lo), hi)
-            // Workspace entrando ou saindo: só desliza a coluna inteira na tela dele. A que está fora da viewport,
-            // ou só em parte na tela, fica estacionada durante a troca (e volta no fim): deslocada junto, ela
-            // entrava na tela do outro workspace, porque uma largura de tela não basta pra tirar o que passa da
-            // borda. Era a 2ª coluna do workspace saindo pela esquerda indo pra x = 0, atrás da janela focada (o
-            // WhatsApp atrás do WezTerm, a aba anônima do Arc; visto no uso em 2026-10-16).
-            if s != 0 {
-                sx = sx >= bounds.minX && sx + w <= bounds.maxX ? min(max(sx + s, lo), hi) : (sx + w / 2 < bounds.midX ? lo : hi)
+            // Workspace entrando ou saindo: desliza junto toda coluna que aparece na tela, mesmo só em parte (a
+            // distância da troca tira ela inteira; ver `Workspaces.switchTo`). A que está fora da viewport fica
+            // estacionada: deslocada junto, ela entraria na tela (a 2ª coluna do workspace saindo pela esquerda
+            // caía em x = 0, atrás da janela focada; visto no uso em 2026-10-16).
+            if away {
+                sx = shift.target < 0 ? lo : hi
+            } else if s != 0 && sx > lo && sx < hi {
+                sx = min(max(sx + s, lo), hi)
             }
             return WindowFrame(window: c.window, rect: CGRect(
                 x: sx.rounded(), y: area.minY.rounded(),
                 width: w, height: area.height.rounded()))
         }
+    }
+
+    /// Quanto a fita precisa andar pro lado `side` (-1 esquerda, 1 direita) pra tirar da tela tudo que aparece
+    /// nela: até uma tela, ou mais se uma coluna passa da borda (o WhatsApp de largura total ao lado do Discord
+    /// de 2/3). 0 se nada aparece.
+    func reach(_ side: Double, at t: Double) -> Double {
+        var l = self
+        l.shift = spring(0)
+        let shown = l.frames(at: t).map(\.rect).filter { $0.maxX > bounds.minX + config.sliver && $0.minX < bounds.maxX - config.sliver }
+        guard let lo = shown.map(\.minX).min(), let hi = shown.map(\.maxX).max() else { return 0 }
+        return side < 0 ? hi - bounds.minX : bounds.maxX - lo
     }
 
     /// Todas as molas a menos de `d` do fim (pt; a da mesa, em milésimos do caminho).

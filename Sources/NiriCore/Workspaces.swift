@@ -12,7 +12,7 @@ public struct Workspaces {
     public init(names: [String], area: CGRect, bounds: CGRect, config: LayoutConfig) {
         self.names = names.isEmpty ? ["1"] : names
         strips = self.names.map { _ in Layout(area: area, bounds: bounds, config: config) }
-        for i in strips.indices.dropFirst() { strips[i].park(1) }
+        for i in strips.indices.dropFirst() { strips[i].park(bounds.width) }
     }
 
     public subscript(k: Int) -> Layout {
@@ -35,18 +35,23 @@ public struct Workspaces {
     /// da animação preserva a velocidade, como o resto.
     public mutating func switchTo(_ k: Int, at t: Double) {
         guard k != active, strips.indices.contains(k) else { return }
-        let dir: Double = k > active ? 1 : -1
+        let dir: Double = k > active ? 1 : -1, w = strips[k].bounds.width
+        // Distância da troca: uma tela, ou o bastante pra tirar da tela a coluna que passa da borda, sem a nova
+        // fita encostar na velha (as duas andam juntas, então a = o que a velha precisa, b = a nova, e as duas
+        // ficam a um gap uma da outra). Com uma tela só, a coluna em parte na tela tinha que sumir na troca e
+        // aparecer no fim (o WhatsApp ao lado do Discord de 2/3; visto no uso em 2026-10-16).
+        let a = strips[active].showsDesktop ? 0 : strips[active].reach(-dir, at: t), b = strips[k].reach(dir, at: t)
+        let d = max(w, a, b, a + b - w + strips[k].config.gap)
         if strips[active].showsDesktop {
             // Com a mesa à mostra as janelas já estão nas bordas: a fita vai direto pro lado dela, sem animar.
             strips[active].setDesktop(false, at: t)
-            strips[active].park(-dir)
+            strips[active].park(-dir * d)
             strips[active].snapToTargets()
         } else {
-            strips[active].slide(to: -dir, at: t)
+            strips[active].slide(to: -dir * d, at: t)
         }
-        // Parada fora da tela do lado errado (sobrou de uma troca anterior): pula pro lado certo antes de entrar.
-        let s = strips[k].shift
-        if s.isSettled(at: t) && s.target * dir < 0 { strips[k].park(dir) }
+        // Parada fora da tela: pula pro lado de onde entra, na distância desta troca (estacionada, não aparece).
+        if strips[k].shift.isSettled(at: t) { strips[k].park(dir * d) }
         strips[k].slide(to: 0, at: t)
         active = k
     }
@@ -80,7 +85,7 @@ public struct Workspaces {
         }
         names = list
         active = now
-        for i in strips.indices where i != now && strips[i].shift.target == 0 { strips[i].park(i < now ? -1 : 1) }
+        for i in strips.indices where i != now && strips[i].shift.target == 0 { strips[i].park((i < now ? -1 : 1) * template.bounds.width) }
         strips[now].slide(to: 0, at: t)
         for c in orphans { strips[now].insert(c, focus: false, at: t) }
     }
@@ -97,7 +102,7 @@ public struct Workspaces {
         for i in strips.indices {
             strips[i].setArea(area, bounds: bounds, at: t)
             // As de fora acompanham a largura nova da tela; já estão fora, então sem animar.
-            if i != active { strips[i].park(strips[i].shift.target < 0 ? -1 : 1) }
+            if i != active { strips[i].park((strips[i].shift.target < 0 ? -1 : 1) * bounds.width) }
         }
     }
 
@@ -107,9 +112,9 @@ public struct Workspaces {
 }
 
 extension Layout {
-    /// Fita inteira fora da tela do lado `side` (-1 esquerda, 1 direita), sem animar.
-    mutating func park(_ side: Double) { shift = Spring(side * bounds.width, stiffness: config.stiffness) }
+    /// Fita inteira fora da tela, deslocada `d` pt (negativo: à esquerda), sem animar.
+    mutating func park(_ d: Double) { shift = Spring(d, stiffness: config.stiffness) }
 
-    /// Desliza a fita inteira: 0 = na tela, ±1 = fora dela, daquele lado.
-    mutating func slide(to side: Double, at t: Double) { shift.retarget(side * bounds.width, at: t) }
+    /// Desliza a fita inteira até o deslocamento `d` (pt): 0 = na tela.
+    mutating func slide(to d: Double, at t: Double) { shift.retarget(d, at: t) }
 }
