@@ -161,6 +161,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func show() {
         model.load(Config.load())
+        refreshPreview()
         let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(panel: self)))
         w.styleMask = [.titled, .closable]
         w.title = "NiriOS"
@@ -205,12 +206,46 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         guard Config.save(["shortcuts": overridden.isEmpty ? nil : overridden,
                            "ghostBorderColor": m.accent ? nil : m.color.hex,
-                           "ghostBorderWidth": m.width == 3 ? nil : m.width]) else {
+                           "ghostBorderWidth": m.width == 3 ? nil : m.width,
+                           "wallpaper": m.wallpaper.map { ($0.path as NSString).abbreviatingWithTildeInPath },
+                           "wallpaperEffect": m.effect == .none ? nil : m.effect.rawValue]) else {
             m.status = "Não salvei: o config.json atual não é um JSON válido. Corrija ou apague o arquivo."
             return
         }
         m.warnings = Config.load().warnings
         m.status = "Salvo às \(Date().formatted(date: .omitted, time: .standard))"
+    }
+
+    func chooseWallpaper() {
+        guard let window else { return }
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.image, .movie]
+        p.message = "Imagem (com efeito, se quiser) ou vídeo (toca só com a mesa à mostra)"
+        p.directoryURL = model.wallpaper?.deletingLastPathComponent()
+        p.beginSheetModal(for: window) { [weak self] r in
+            guard r == .OK, let url = p.url, let self else { return }
+            model.wallpaper = url
+            if WallpaperArt.isVideo(url) { model.effect = .none }
+            wallpaperChanged()
+        }
+    }
+
+    func wallpaperChanged() {
+        scheduleSave()
+        refreshPreview()
+    }
+
+    private func refreshPreview() {
+        let m = model, url = m.wallpaper, effect = m.effect, screen = NSScreen.screens[0]
+        let box = m.previewBox, size = screen.frame.size, scale = screen.backingScaleFactor
+        guard let url else { m.preview = nil; return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let img = WallpaperArt.preview(url, effect: effect, screen: size, scale: scale, box: box)
+            DispatchQueue.main.async {
+                guard m.wallpaper == url, m.effect == effect else { return }  // já trocou de novo
+                m.preview = img
+            }
+        }
     }
 
     func add(_ k: Shortcut, to a: Action) {
@@ -271,6 +306,16 @@ final class PanelController: NSObject, NSWindowDelegate {
     var heldModifiers = ""
     var status = ""
     var warnings: [String] = []
+    var wallpaper: URL?
+    var effect = WallpaperEffect.none
+    var preview: CGImage?
+    var isVideo: Bool { wallpaper.map(WallpaperArt.isVideo) ?? false }
+    /// Com efeito, a prévia é um recorte do centro em tamanho real; sem efeito, a tela inteira reduzida.
+    var cropped: Bool { effect != .none && !isVideo }
+    var previewBox: CGSize {
+        let s = NSScreen.screens[0].frame.size
+        return cropped ? CGSize(width: 520, height: 200) : CGSize(width: (200 * s.width / s.height).rounded(), height: 200)
+    }
 
     func load(_ c: Config) {
         shortcuts = c.shortcuts
@@ -278,6 +323,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let col = c.ghostBorderColor { color = col }
         width = c.ghostBorderWidth
         warnings = c.warnings
+        wallpaper = c.wallpaper
+        effect = c.wallpaperEffect
     }
 }
 
@@ -289,6 +336,30 @@ extension Action {
         case .focusLeft: "Foco à esquerda"
         case .focusRight: "Foco à direita"
         case .toggleFullWidth: "Largura total"
+        case .toggleDesktop: "Mostrar a mesa"
+        }
+    }
+}
+
+extension WallpaperEffect {
+    /// Os nomes e as dicas do Kinggie.
+    var title: String {
+        switch self {
+        case .none: "Nenhum"
+        case .dither: "Dither"
+        case .halftone: "Meio-tom"
+        case .scanlines: "Scanlines"
+        case .ascii: "ASCII"
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .none: "Mostra a imagem original."
+        case .dither: "Poucas cores, em pontilhado."
+        case .halftone: "Pontos do tamanho do brilho."
+        case .scanlines: "Linhas de tela antiga."
+        case .ascii: "A imagem escrita em letras."
         }
     }
 }
@@ -345,6 +416,41 @@ private struct SettingsView: View {
                         Text(String(format: "%.1f pt", model.width)).monospacedDigit().frame(width: 48, alignment: .trailing)
                     }
                 }
+            }
+
+            Section {
+                WallpaperPreview(image: model.preview, cropped: model.cropped, height: model.previewBox.height)
+                LabeledContent("Arquivo") {
+                    HStack {
+                        Text(model.wallpaper?.lastPathComponent ?? "O do macOS")
+                            .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                        Button("Escolher…") { panel.chooseWallpaper() }
+                        if model.wallpaper != nil {
+                            Button("Remover") {
+                                model.wallpaper = nil
+                                model.effect = .none
+                                panel.wallpaperChanged()
+                            }
+                        }
+                    }
+                }
+                Picker("Efeito", selection: Binding(get: { model.effect }, set: { model.effect = $0; panel.wallpaperChanged() })) {
+                    ForEach(WallpaperEffect.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .disabled(model.wallpaper == nil || model.isVideo)
+            } header: {
+                Text("Papel de parede")
+            } footer: {
+                Group {
+                    if model.isVideo {
+                        Text("Vídeo: toca só com a mesa à mostra (⌥D ou sem janelas) e para no quadro onde estava quando as janelas voltam.")
+                    } else if model.wallpaper != nil {
+                        Text("\(model.effect.hint) A imagem vira o papel de parede do macOS, sem custo com o niri-os rodando. Remover devolve o de antes.")
+                    } else {
+                        Text("Imagem com efeito (dither, meio-tom, scanlines, ASCII) ou vídeo em loop. ⌥D mostra a mesa sem os ícones.")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
@@ -443,6 +549,33 @@ private struct KeyCap: View {
                 }
             }
             .onHover { hover = $0 }
+    }
+}
+
+/// Prévia do papel de parede em pixels reais (sem filtro: o dither tem que aparecer em blocos nítidos).
+private struct WallpaperPreview: View {
+    let image: CGImage?
+    let cropped: Bool
+    let height: Double
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(decorative: image, scale: NSScreen.screens[0].backingScaleFactor).interpolation(cropped ? .none : .high)
+            } else {
+                Text("Papel de parede do macOS").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .background(.black)
+        .clipShape(.rect(cornerRadius: 8))
+        .overlay(alignment: .bottomTrailing) {
+            if cropped && image != nil {
+                Text("centro, em tamanho real").font(.caption2).foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.6), in: .capsule).padding(6)
+            }
+        }
     }
 }
 

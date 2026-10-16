@@ -237,3 +237,63 @@ func endsOfStripTouchScreenEdges(center: CenterMode) {
     let after = settle(&l)
     for (a, b) in zip(after, after.dropFirst()) { #expect(b.rect.minX - a.rect.maxX == 30) }
 }
+
+private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX == bounds.minX + 1 }
+
+/// Option+D: cada janela sai pela borda mais próxima e fica estacionada com 1 pt; de novo, tudo volta
+/// exatamente pro lugar.
+@Test func desktopParksEveryWindowAtNearestEdgeAndComesBack() {
+    var l = makeLayout(3, center: .always)
+    _ = l.focusNeighbor(1, at: 0)
+    let before = settle(&l)
+    l.setDesktop(true, at: 0)
+    let shown = settle(&l)
+    #expect(shown.allSatisfy { parked($0.rect) })
+    #expect(shown.map { $0.rect.minX < bounds.midX } == [true, false, false])  // a focada (no meio) vai pra direita
+    l.setDesktop(false, at: 0)
+    #expect(settle(&l).map(\.rect) == before.map(\.rect))
+}
+
+/// Em todo frame da saída e da volta: ninguém se sobrepõe, vizinhas do mesmo lado continuam a `gap`
+/// exato, e quem estava estacionada não entra na tela.
+@Test(arguments: [CenterMode.never, .always])
+func desktopAnimationKeepsGapsAndNeverOverlaps(center: CenterMode) {
+    var l = makeLayout(5, proportion: 0.4, center: center)
+    _ = l.focusNeighbor(2, at: 0)
+    _ = settle(&l)
+    let split = l.frames(at: 0).prefix { $0.rect.midX < bounds.midX }.count
+    for on in [true, false] {
+        l.setDesktop(on, at: 0)
+        var t = 0.0
+        while t < 1 {
+            let f = l.frames(at: t)
+            for (i, (a, b)) in zip(f, f.dropFirst()).enumerated() where !parked(a.rect) && !parked(b.rect) {
+                #expect(b.rect.minX - a.rect.maxX >= 12, "t=\(t): \(a.rect) e \(b.rect)")
+                if i + 1 != split { #expect(b.rect.minX - a.rect.maxX == 12, "t=\(t): \(a.rect) e \(b.rect)") }
+            }
+            for p in f where parked(p.rect) {
+                #expect(p.rect.maxX <= area.minX || p.rect.minX >= area.maxX, "estacionada invadindo: \(p.rect)")
+            }
+            t += 1.0 / 120
+        }
+        l.snapToTargets()
+    }
+}
+
+/// Janela nova ou foco (Cmd+Tab, Dock) trazem a fita de volta; fechar uma janela escondida não.
+@Test func desktopEndsOnNewWindowOrFocusButNotOnClose() {
+    var l = makeLayout(3, center: .always)
+    l.setDesktop(true, at: 0)
+    _ = settle(&l)
+    l.remove(1, at: 0)
+    #expect(l.showsDesktop)
+    #expect(settle(&l).allSatisfy { parked($0.rect) })
+    l.focus(l.focusedWindow!, at: 0)
+    #expect(!l.showsDesktop)
+    #expect(!settle(&l).allSatisfy { parked($0.rect) })
+    l.setDesktop(true, at: 0)
+    l.insert(99, focus: true, at: 0)
+    #expect(!l.showsDesktop)
+    let f = settle(&l)
+    #expect(f.contains { $0.window == 99 && !parked($0.rect) })
+}

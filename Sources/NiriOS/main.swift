@@ -1,4 +1,5 @@
 import AppKit
+import NiriCore
 
 let usage = """
 niri-os: tiling em fita horizontal (estilo niri) pro macOS
@@ -10,6 +11,7 @@ niri-os: tiling em fita horizontal (estilo niri) pro macOS
 Atalhos: Option + / Option -   largura da coluna focada
          Option , / Option .   foco pra coluna da esquerda / direita (também Option < > e Option ← →)
          Option F             coluna em largura total (de novo: volta)
+         Option D             mostra a mesa: as janelas saem pelas bordas (de novo: voltam)
 Config:  ~/.config/niri-os/config.json, ou pelo ícone na barra de menu. Salvar aplica na hora.
 """
 
@@ -24,6 +26,10 @@ if args.contains("-h") || args.contains("--help") {
 }
 // O painel de configurações, aberto pelo ícone na barra de menu (ver `Settings`).
 if args.contains("--settings") { SettingsPanel.run() }
+// O papel de parede, aberto pelo niri-os quando o config muda (ver `WallpaperArt`).
+if let path = value("--wallpaper") {
+    WallpaperProcess.run(path, effect: argv.last.flatMap(WallpaperEffect.init) ?? .none)
+}
 
 let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
 guard AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) else {
@@ -62,7 +68,7 @@ if let pid = value("--pid").flatMap(Int32.init) {
 }
 // Sem --pid, o script roda nas janelas de verdade, com foco: é o único jeito de medir a troca de foco.
 let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow": .grow,
-                               "shrink": .shrink, "full": .toggleFullWidth]
+                               "shrink": .shrink, "full": .toggleFullWidth, "desktop": .toggleDesktop]
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { names[String($0)] }
 
 // Dois gerenciadores mexendo nas mesmas janelas = briga a cada frame.
@@ -77,6 +83,8 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let wm = WindowManager(config: config, verbose: args.contains("-v") || args.contains("--verbose"), dev: dev)
 
+// O processo do papel de parede caído: escrever no stdin dele vira erro, não queda do niri-os.
+signal(SIGPIPE, SIG_IGN)
 var signalSources: [DispatchSourceSignal] = []
 // SIGUSR1: sai sem mexer nas janelas (pra reiniciar uma versão nova sem bagunçar a tela).
 signal(SIGUSR1, SIG_IGN)

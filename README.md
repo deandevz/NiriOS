@@ -15,8 +15,9 @@ Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: um wo
 | `Option +` / `Option -` | largura da coluna focada: pula entre 1/3, 1/2, 2/3 e tela cheia (como no niri) |
 | `Option ,` / `Option .` (ou `<` `>`, ou `←` `→`) | foco pra coluna da esquerda / direita, a fita rola junto |
 | `Option F` | coluna em largura total; de novo volta à largura anterior |
+| `Option D` | mostra a mesa: as janelas saem pela borda mais próxima, sem os ícones da mesa; de novo voltam |
 
-Segurar a tecla repete (menos o `Option F`). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe. Esses são os atalhos padrão; todos podem ser trocados (abaixo).
+Segurar a tecla repete (menos `Option F` e `Option D`). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe. Esses são os atalhos padrão; todos podem ser trocados (abaixo).
 
 Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). O painel grava nele, e salvar o arquivo à mão também aplica na hora:
 
@@ -24,12 +25,13 @@ Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). 
 { "gap": 12, "topPadding": 0, "bottomPadding": 0, "defaultColumnWidth": 0.5,
   "widthPresets": [0.333, 0.5, 0.667, 1], "resizeStyle": "ghost", "stiffness": 800,
   "shortcuts": { "grow": ["option+=", "ctrl+option+up"], "toggleFullWidth": [] },
-  "ghostBorderColor": "#BE00F9", "ghostBorderWidth": 3 }
+  "ghostBorderColor": "#BE00F9", "ghostBorderWidth": 3,
+  "wallpaper": "~/Pictures/fundo.jpg", "wallpaperEffect": "dither" }
 ```
 
-`shortcuts`: ações `grow`, `shrink`, `focusLeft`, `focusRight`, `toggleFullWidth`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option <` = `Option ,`). O mesmo atalho em duas ações: vale a primeira, com aviso. `ghostBorderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `ghostBorderWidth` em pt (0 tira a borda).
+`shortcuts`: ações `grow`, `shrink`, `focusLeft`, `focusRight`, `toggleFullWidth`, `toggleDesktop`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option <` = `Option ,`). O mesmo atalho em duas ações: vale a primeira, com aviso. `ghostBorderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `ghostBorderWidth` em pt (0 tira a borda). `wallpaper`: imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); sem a chave, o niri-os não mexe no papel de parede do macOS (e devolve o de antes, se o atual era dele). `wallpaperEffect`: `none` (padrão), `dither`, `halftone`, `scanlines` ou `ascii`, só pra imagem. Detalhes em "Mesa e papel de parede".
 
-Ao recarregar: atalhos e borda valem na hora; `gap`, margens, `defaultColumnWidth`, `stiffness` e `centerFocusedColumn` animam as janelas pro lugar novo (nada pula); `widthPresets` e `widthStep` valem na próxima tecla; `resizeStyle` e `axTimeout` só ao reiniciar. Arquivo com JSON inválido: usa os padrões, avisa no log e no painel, e o painel não grava por cima (perderia o que foi escrito à mão).
+Ao recarregar: atalhos, borda e papel de parede valem na hora; `gap`, margens, `defaultColumnWidth`, `stiffness` e `centerFocusedColumn` animam as janelas pro lugar novo (nada pula); `widthPresets` e `widthStep` valem na próxima tecla; `resizeStyle` e `axTimeout` só ao reiniciar. Arquivo com JSON inválido: usa os padrões, avisa no log e no painel, e o painel não grava por cima (perderia o que foi escrito à mão).
 
 `topPadding` serve pra SketchyBar. `stiffness` maior = animação mais rápida (800 ≈ 0,35 s, igual ao niri). `widthPresets: []` volta pro passo fixo de `widthStep` (padrão 0.1). `resizeStyle` é como o `Option +/-` anima: `ghost` (padrão, vidro fosco no lugar da janela, abaixo), `photos` (fotos das janelas, abaixo; precisa da permissão de Gravação de Tela pro terminal, e sem ela vira `live`) ou `live` (as janelas reais, frame a frame).
 
@@ -155,6 +157,39 @@ Testado e descartado:
 
 Pausa dos atalhos conferida com `⌥G` (modificador de atalho, sem ação): gravando, a tecla chegou ao painel e o log `-v` do niri-os não registrou nada.
 
+## Mesa e papel de parede (2026-10-15)
+
+### `Option D`: mostrar a mesa
+
+O "mostrar mesa" do macOS mostra os ícones da mesa mesmo com eles escondidos (`StandardHideDesktopIcons = 1`, o caso aqui). O nosso só tira as janelas da frente: os ícones continuam como o Finder está configurado.
+
+- **Cada janela sai pela borda mais próxima.** Quem tem o meio à esquerda do meio da tela vai pra esquerda; o resto, pra direita. Cada lado anda junto, até a janela dele mais perto do meio encostar na borda com 1 pt (a regra de estacionar de sempre). O gap entre vizinhas do mesmo lado fica exato em todo frame (teste `desktopAnimationKeepsGapsAndNeverOverlaps`).
+- **Está no `Layout`** (`showsDesktop` e uma mola de 0 a 1000 milésimos do caminho), não num estado paralelo. Por frame, é uma soma por coluna. Mesma mola do resto: trocar no meio preserva a velocidade.
+- **Volta com:** `Option D` de novo; qualquer outro atalho (volta e faz o que pediu: `Option →` volta e já foca a da direita); foco em outra janela (Cmd+Tab, Dock); o app da janela focada ativado de novo pela pessoa; janela nova. Fechar uma janela escondida não traz a fita de volta.
+- **Não volta com os avisos de foco da própria janela focada.** A conferência de foco 0,6 s depois de cada pedido manda um, e desfazia o `Option D` apertado logo depois de um `Option →`. App sem janela na fita (Finder com clique na mesa, o painel) também não mexe em nada.
+
+Medido nos painéis de teste (`--script right,desktop,desktop,desktop,right,full,desktop,left,desktop`): cada animação ~390 ms, maior intervalo entre ticks 8,4 a 13,1 ms, maior intervalo por app ≤ 14,3 ms, 0 frames com sobreposição, verificação final "tudo no lugar".
+
+### Papel de parede (`wallpaper`, `wallpaperEffect`)
+
+- **Imagem: vira o papel de parede do próprio macOS** (`NSWorkspace.setDesktopImageURL`). Com efeito, o PNG pronto fica em `~/Library/Application Support/niri-os/wallpaper/<hash>.png` (nome novo a cada mudança: com o mesmo nome o macOS mostra o cache velho). Depois de aplicado custa zero: nenhuma janela nossa, nada na memória do niri-os, e aparece também no Mission Control e na troca de Space. O papel de parede de antes do primeiro nosso fica em `original.txt` e volta quando `wallpaper` sai do config.
+- **Efeitos portados do Kinggie** (King Bot v2, `src/kinggie/web/backdrop/treat.ts`), mesmas contas e números, com os testes dele portados (`WallpaperEffectTests`): dither Bayer 4×4 por canal em 4 tons (célula de 3 pt), meio-tom em células de 6 pt com ponto do tamanho do brilho, scanlines (uma linha em três a 0,38, as outras a 1,1) e ASCII (glifos ` .:-=+*#%@` em células de 7×12 pt). Como no Kinggie: uma amostra por célula (a imagem reduzida com filtro bom), o efeito, e cada amostra ampliada sem filtro. Na tela o dither sai em blocos de 6×6 px nítidos (conferido capturando a janela do papel de parede).
+- **Vídeo: janela nossa no nível do papel de parede** (-2147483623: acima do papel de parede do Dock, -2147483624, e abaixo da janela da mesa do Finder e da do WindowManager, -2147483603), em loop, sem som, sem impedir a tela de apagar. Toca só com a mesa à mostra (`Option D` ou fita vazia) e com a janela visível (outro Space, app em tela cheia, tela bloqueada ou apagada pausam pelo aviso de oclusão do macOS, sem polling). Parado, fica no quadro onde estava, que é o que aparece nos gaps. O 1º quadro vira o papel de parede do macOS por baixo, que é o que aparece se o niri-os sair.
+- **Tudo roda em outro processo** (`niri-os --wallpaper <arquivo> <efeito>`, ou `--wallpaper none` pra devolver o de antes), aberto pelo niri-os só quando o config muda. O de imagem sai sozinho depois de aplicar; o de vídeo recebe `play`/`pause` pelo stdin e sai quando o stdin fecha (o niri-os saiu). Sem `wallpaper` e sem nada pra devolver, nem abre.
+- **Painel:** seção "Papel de parede" com escolher/remover arquivo, efeito (nomes e dicas do Kinggie) e prévia. Com efeito, a prévia é o centro da tela em tamanho real: reduzir um dither embaralha os pontos (o moiré que está aberto na prévia do Kinggie).
+
+Medições (MacBook, 1728×1117 pt a 2x, imagem 3840×2160):
+
+| | |
+|---|---|
+| render de um efeito (ler + efeito + PNG) | 150 a 250 ms |
+| PNG gerado | dither 0,3 MB, ASCII 0,7, meio-tom 1,4, scanlines 3,2 |
+| pico de memória do render | 124 MB (os 5 efeitos seguidos num processo): por isso fica fora do niri-os |
+| processo do vídeo, 4K 60 fps HEVC | parado: 30 MB e 0% de CPU; tocando: 32 MB e 3% |
+| niri-os parado, modo de teste, antes / depois | 9,7 a 9,8 MB / 9,8 MB (linkar o AVFoundation não pesa enquanto ninguém usa) |
+
+Ainda não conferido no uso real: a pausa por oclusão (tela cheia, Space, bloqueio), o clique na mesa com o Finder tendo janela na fita, e papel de parede dinâmico ou Aerial como "o de antes" (a API devolve uma URL; se for de um Aerial, pode não voltar igual).
+
 ## Testar sem mexer nas suas janelas
 
 ```sh
@@ -174,5 +209,6 @@ swift build -c release
 - **Apps diferentes podem se sobrepor por um frame** durante a animação. Cada app aplica na sua fila, sem ordem entre filas. A ordem dentro do mesmo app já evita isso. Próximo experimento: congelar a atualização da tela durante o lote do frame (`SLSDisableUpdate`) ou transações do SkyLight, sem SIP.
 - Janela com largura mínima maior que a coluna: o app recusa e a janela invade a vizinha.
 - Diálogos, sheets e painéis ficam fora da fita (flutuam). Centralizar sobre a janela dona ainda não foi feito.
+- Papel de parede: efeito só em imagem (no vídeo seria um filtro por quadro); render pro tamanho da tela principal, aplicado em todas.
 - Só a tela principal e um workspace. Esconder um app (Cmd+H) tira as janelas dele da fita; ao reaparecer, elas voltam à direita da focada.
 - Se o processo morrer sem Ctrl+C, as janelas ficam estacionadas na borda. Rodar de novo (e sair com Ctrl+C) devolve.

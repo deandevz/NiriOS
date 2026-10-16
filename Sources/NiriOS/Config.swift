@@ -36,6 +36,10 @@ struct Config {
     /// Borda do vidro do resize fantasma. nil = cor de destaque do sistema.
     var ghostBorderColor: NSColor?
     var ghostBorderWidth: Double = 3
+    /// Papel de parede (ver `WallpaperArt`): imagem, que vira o do macOS com `wallpaperEffect` aplicado, ou
+    /// vídeo, que toca só com a mesa à mostra. nil = não mexe no do macOS (e devolve o de antes, se era nosso).
+    var wallpaper: URL?
+    var wallpaperEffect = WallpaperEffect.none
     /// O que estava errado no arquivo (aparece no log e no painel).
     var warnings: [String] = []
 
@@ -45,7 +49,7 @@ struct Config {
     static let defaultShortcuts: [Action: [Shortcut]] = [
         .grow: ["option+=", "option+keypadplus"], .shrink: ["option+-", "option+keypadminus"],
         .focusLeft: ["option+,", "option+left"], .focusRight: ["option+.", "option+right"],
-        .toggleFullWidth: ["option+f"],
+        .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
     static let path = FileManager.default.homeDirectoryForCurrentUser
@@ -98,8 +102,21 @@ struct Config {
             if let color = NSColor(hex: s) { c.ghostBorderColor = color } else { warn("ghostBorderColor '\(s)' inválida (use #RRGGBB, #RRGGBBAA ou accent)") }
         }
         if let v = num("ghostBorderWidth") { c.ghostBorderWidth = max(0, v) }
+        if let s = obj["wallpaper"] as? String, !s.isEmpty {
+            // Arquivo que sumiu (disco externo, por exemplo) fica no config: o processo avisa e não mexe em nada.
+            let url = URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+            if !FileManager.default.fileExists(atPath: url.path) { warn("wallpaper: arquivo não encontrado: \(s)") }
+            c.wallpaper = url
+        }
+        if let s = obj["wallpaperEffect"] as? String {
+            if let e = WallpaperEffect(rawValue: s) { c.wallpaperEffect = e } else { warn("wallpaperEffect '\(s)' inválido (use none, dither, halftone, scanlines ou ascii)") }
+        }
+        if let w = c.wallpaper, WallpaperArt.isVideo(w), c.wallpaperEffect != .none {
+            warn("wallpaperEffect vale só pra imagem; o vídeo toca sem efeito")
+            c.wallpaperEffect = .none
+        }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "resizeStyle", "stiffness", "axTimeout",
-                          "centerFocusedColumn", "shortcuts", "ghostBorderColor", "ghostBorderWidth"]
+                          "centerFocusedColumn", "shortcuts", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         log("config carregada de \(path.path)")
         return c

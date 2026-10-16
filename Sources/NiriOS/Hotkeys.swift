@@ -4,7 +4,7 @@ import os
 
 /// O nome de cada ação é a chave dela em "shortcuts" no config.json.
 enum Action: String, CaseIterable {
-    case grow, shrink, focusLeft, focusRight, toggleFullWidth
+    case grow, shrink, focusLeft, focusRight, toggleFullWidth, toggleDesktop
 }
 
 /// Atalhos globais via CGEventTap.
@@ -118,8 +118,8 @@ final class HotkeyTap {
 
         if type == .keyDown {
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            // Segurar a tecla repete resize e navegação; tela cheia alternando sem parar não faz sentido.
-            if !(isRepeat && action == .toggleFullWidth) {
+            // Segurar a tecla repete resize e navegação; tela cheia e mesa alternando sem parar não fazem sentido.
+            if !(isRepeat && (action == .toggleFullWidth || action == .toggleDesktop)) {
                 DispatchQueue.main.async { self.handler(action) }
             }
         }

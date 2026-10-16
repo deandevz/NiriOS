@@ -33,6 +33,8 @@ final class WindowManager: NSObject {
     private var ticks = 0
     private var lastTick = 0.0
     private var maxTickGap = 0.0
+    /// Só na instância de verdade: teste (--pid, --script) não mexe no papel de parede.
+    private var wallpaper: WallpaperHost?
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
         tap.setShortcuts(config.shortcuts)
@@ -75,6 +77,7 @@ final class WindowManager: NSObject {
         config = c
         hotkeys.setShortcuts(c.shortcuts)
         ghost?.border = (c.ghostBorderColor, c.ghostBorderWidth)
+        wallpaper?.apply(c)
         if c.resizeStyle != old.resizeStyle || c.axTimeout != old.axTimeout {
             log("config: resizeStyle e axTimeout mudam só ao reiniciar o niri-os")
         }
@@ -111,6 +114,10 @@ final class WindowManager: NSObject {
         self.link = link
         _ = transition  // a janela da transição já fica pronta na tela, vazia
         _ = ghost
+        if dev.pid == nil && dev.script.isEmpty {
+            wallpaper = WallpaperHost()
+            wallpaper?.apply(config)
+        }
 
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] n in
@@ -123,6 +130,7 @@ final class WindowManager: NSObject {
         }
         ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self?.activated(app.processIdentifier)
             // Rescan aqui também: se algum evento de janela se perdeu, ativar o app corrige.
             self?.workers[app.processIdentifier]?.requestScan()
             self?.workers[app.processIdentifier]?.reportFocusedWindow()
@@ -319,8 +327,24 @@ final class WindowManager: NSObject {
                 pendingFocus = nil
             }
         }
+        // Com a mesa à mostra, foco em outra janela (Cmd+Tab, Dock) traz a fita de volta (ver `activated`).
         guard tracked[id] != nil, layout.focusedWindow != id else { return }
+        if verbose && layout.showsDesktop { log("foco em \(workers[pid]?.name ?? "?") com a mesa à mostra: fita de volta") }
         layout.focus(id, at: now)
+        animate()
+    }
+
+    /// Com a mesa à mostra, o app da janela focada ativado de novo pela pessoa (Cmd+Tab ou Dock depois de
+    /// passar por outro) traz a fita de volta. Avisos de foco da própria janela focada não servem pra isso:
+    /// a conferência de foco 0,6 s depois de cada pedido manda um, e desfazia o Option+D apertado logo
+    /// depois de um Option+→. App de outra janela vem por `focusChanged`; app sem janela na fita (o Finder
+    /// com clique na mesa, o painel de configurações) não mexe em nada.
+    private func activated(_ pid: pid_t) {
+        let now = CACurrentMediaTime()
+        guard layout.showsDesktop, pendingFocus.map({ now - $0.time > 0.5 }) ?? true,
+              let f = layout.focusedWindow, tracked[f]?.pid == pid else { return }
+        if verbose { log("\(workers[pid]?.name ?? "?") ativado com a mesa à mostra: fita de volta") }
+        layout.setDesktop(false, at: now)
         animate()
     }
 
@@ -337,6 +361,13 @@ final class WindowManager: NSObject {
     private func perform(_ action: Action) {
         guard global == nil else { queuedAction = action; return }  // roda quando a transição acabar
         let now = CACurrentMediaTime()
+        if action == .toggleDesktop || layout.showsDesktop {
+            // Com a mesa à mostra, qualquer atalho traz a fita de volta (e faz o que pediu).
+            layout.setDesktop(action == .toggleDesktop && !layout.showsDesktop, at: now)
+            if verbose { log(layout.showsDesktop ? "mesa à mostra" : "fita de volta") }
+            animate()
+            if action == .toggleDesktop { return }
+        }
         switch action {
         case .focusLeft, .focusRight:
             // Tecla de novo com a fita andando: só rola, e o app onde ela parar é ativado quando assentar.
@@ -355,6 +386,7 @@ final class WindowManager: NSObject {
         case .grow, .shrink, .toggleFullWidth:
             if transition != nil, startGlobal(action, at: now) { return }
             if ghost != nil { resizeWithGhost(action, at: now) } else { resize(&layout, action, at: now) }
+        case .toggleDesktop: break
         }
         animate()
     }
@@ -366,7 +398,7 @@ final class WindowManager: NSObject {
             if config.widthPresets.isEmpty { l.resizeFocused(by: Double(dir) * config.widthStep, at: t) }
             else { l.resizeFocused(toPresetIn: config.widthPresets, direction: dir, at: t) }
         case .toggleFullWidth: l.toggleFullWidthFocused(at: t)
-        case .focusLeft, .focusRight: break
+        case .focusLeft, .focusRight, .toggleDesktop: break
         }
     }
 
@@ -708,6 +740,8 @@ final class WindowManager: NSObject {
     private func animate() {
         layoutVersion += 1
         scheduleSave()
+        // O vídeo do papel de parede toca só com a mesa à mostra; com janela na tela ele para.
+        if started { wallpaper?.desktopShown(layout.showsDesktop || layout.windows.isEmpty) }
         guard let link else { return }
         if link.isPaused {
             animationStart = CACurrentMediaTime()
