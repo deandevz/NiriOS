@@ -95,6 +95,31 @@ private func settle(_ l: inout Layout) -> [WindowFrame] {
     #expect(f.allSatisfy { $0.rect.width == 846 })
 }
 
+/// Janela que volta (de tela cheia, minimizada) entra no lugar de onde saiu. Entrando à esquerda da focada, o
+/// foco continua na mesma janela e nada pula no primeiro frame.
+@Test func insertAtPositionKeepsFocusAndDoesNotJump() {
+    var l = makeLayout(3, center: .always)
+    _ = l.focusNeighbor(2, at: 0)
+    _ = settle(&l)
+    let before = l.frames(at: 0)
+    l.insert(99, position: 1, focus: false, at: 0)
+    #expect(l.windows == [1, 99, 2, 3])
+    #expect(l.focusedWindow == 3)
+    #expect(l.frames(at: 0).filter { $0.window != 99 }.map(\.rect) == before.map(\.rect))
+    let f = settle(&l)
+    #expect(f.map(\.rect.minX) == f.map(\.rect.minX).sorted())
+}
+
+/// O foco adiado sai quando falta pouco: perto do fim, antes de a mola assentar de vez.
+@Test func nearComesBeforeSettled() {
+    var l = makeLayout(4, center: .always)
+    _ = l.focusNeighbor(1, at: 0)
+    var t = 0.0
+    while !l.isNear(at: t, within: 3) { t += 1.0 / 120 }
+    #expect(!l.isSettled(at: t))
+    #expect(t > 0.15 && t < 0.35, "t=\(t)")
+}
+
 @Test func removeFocusedFocusesRightNeighborAndSlides() {
     var l = makeLayout(3)
     _ = l.focusNeighbor(1, at: 0)
@@ -202,6 +227,8 @@ func endsOfStripTouchScreenEdges(center: CenterMode) {
 @Test func minWidthWiderThanAreaIsIgnored() {
     var l = makeLayout(2, proportion: 1, center: .always)
     l.setMinWidth(1, 1728, at: 0)
+    #expect(l.columns[0].minWidth == 0)
+    l.setMinWidth(1, 1704, at: 0)  // a área toda: leitura de app que ainda não aplicou o tamanho
     #expect(l.columns[0].minWidth == 0)
     l.append(3, proportion: 1, minWidth: 1728)
     #expect(l.columns[2].minWidth == 0)

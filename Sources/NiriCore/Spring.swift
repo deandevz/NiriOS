@@ -39,6 +39,9 @@ public struct Spring {
         abs(value(at: t) - target) < 0.5 && abs(velocity(at: t)) < 5
     }
 
+    /// Falta menos de `d` pra chegar (sem olhar a velocidade).
+    public func isNear(at t: Double, within d: Double) -> Bool { abs(value(at: t) - target) < d }
+
     /// Novo alvo, partindo da posição e velocidade atuais.
     public mutating func retarget(_ newTarget: Double, at t: Double) {
         guard newTarget != target else { return }

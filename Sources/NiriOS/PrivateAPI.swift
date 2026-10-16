@@ -30,6 +30,18 @@ enum Private {
     private static let mainConnection = symbol("SLSMainConnectionID", in: skyLight, as: MainConnFn.self)
     private static let captureWindows = symbol("SLSHWCaptureWindowList", in: skyLight, as: CaptureFn.self)
 
+    private typealias SpacesFn = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private static let spacesForWindows = symbol("SLSCopySpacesForWindows", in: skyLight, as: SpacesFn.self)
+
+    /// A janela existe e está em algum Space, o atual ou outro (o de uma tela cheia, outro desktop). Fechada, ou
+    /// "fechada" por app que só esconde a janela, não está em nenhum (medido em 2026-10-16: as janelas
+    /// escondidas do Arc vêm sem Space). Pergunta ao WindowServer, não ao app: ~0,3 ms.
+    static func isOnAnySpace(_ window: CGWindowID) -> Bool {
+        guard let mainConnection, let spacesForWindows else { return false }
+        let spaces = spacesForWindows(mainConnection(), 7, [NSNumber(value: window)] as CFArray)?.takeRetainedValue()
+        return (spaces as? [NSNumber])?.isEmpty == false
+    }
+
     /// Foto da janela inteira de outro app, mesmo fora da tela. Precisa de Gravação de Tela.
     /// Opções: 1<<11 ignora o recorte global, 1<<8 resolução Retina, 1<<15 a janela toda (sem ela
     /// só vem a parte visível). Medido: 10 a 60 ms; a ScreenCaptureKit leva ~95 ms.

@@ -297,6 +297,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
 @Observable final class SettingsModel {
     var shortcuts: [Action: [Shortcut]] = [:]
+    var workspaces: [WorkspaceRule] = []
     /// Borda na cor de destaque do sistema; senão, `color`.
     var accent = true
     var color = NSColor.systemOrange
@@ -320,6 +321,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func load(_ c: Config) {
         shortcuts = c.shortcuts
+        workspaces = c.workspaces
         accent = c.ghostBorderColor == nil
         if let col = c.ghostBorderColor { color = col }
         width = c.ghostBorderWidth
@@ -338,6 +340,8 @@ extension Action {
         case .focusRight: "Foco à direita"
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
+        case .workspace(let n): "Workspace \(n)"
+        case .moveToWorkspace(let n): "Mandar a janela pro \(n)"
         }
     }
 }
@@ -400,6 +404,15 @@ private struct SettingsView: View {
                 Text("Atalhos")
             } footer: {
                 Text("+ grava um atalho novo (Esc cancela). Precisa de ⌃, ⌥ ou ⌘. A tecla vale pela posição: igual em US e ABNT2.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                ForEach(model.workspaces, id: \.name) { WorkspaceRow(workspace: $0, model: model) }
+            } header: {
+                Text("Workspaces")
+            } footer: {
+                Text("Lado a lado, nessa ordem. A lista, os atalhos e os apps de cada um ficam na chave workspaces do config.json.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -517,6 +530,27 @@ private struct ShortcutRow: View {
                 }
             }
             .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Um workspace: atalho pra ir e pra mandar a janela, e os apps que abrem nele. Só mostra: editar é no arquivo.
+private struct WorkspaceRow: View {
+    let workspace: WorkspaceRule
+    let model: SettingsModel
+
+    var body: some View {
+        let go = model.shortcuts[.workspace(workspace.name)] ?? [], move = model.shortcuts[.moveToWorkspace(workspace.name)] ?? []
+        LabeledContent {
+            HStack(spacing: 6) {
+                if go.isEmpty && move.isEmpty { Text("Sem atalho").foregroundStyle(.tertiary) }
+                ForEach(go, id: \.self) { KeyCap(text: $0.display) }
+                ForEach(move, id: \.self) { KeyCap(text: $0.display).help("Manda a janela focada pra cá") }
+            }
+        } label: {
+            Text(workspace.name).font(.body.weight(.semibold))
+            let apps = workspace.apps + (workspace.open.map { ["abre \($0) se vazio"] } ?? [])
+            if !apps.isEmpty { Text(apps.joined(separator: ", ")) }
         }
     }
 }

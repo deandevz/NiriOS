@@ -13,6 +13,8 @@ struct WindowInfo {
     /// O app não respondeu direito sobre esta janela. Não dá pra concluir nada: quem está na fita
     /// continua, quem não está não entra.
     let uncertain: Bool
+    /// Em tela cheia nativa (num Space à parte).
+    let fullScreen: Bool
     var tileable: Bool { skipReason == nil && !uncertain }
 }
 
@@ -31,6 +33,7 @@ struct ScanResult {
 final class AppWorker {
     let pid: pid_t
     let name: String
+    let bundleID: String?
     private let app: AXUIElement
     private let queue: DispatchQueue
     private let timeout: Float
@@ -80,10 +83,11 @@ final class AppWorker {
     /// Modo de teste: aceita painéis flutuantes também.
     private let anySubrole: Bool
 
-    init(pid: pid_t, name: String, timeout: Double, anySubrole: Bool = false) {
+    init(pid: pid_t, name: String, bundleID: String?, timeout: Double, anySubrole: Bool = false) {
         self.anySubrole = anySubrole
         self.pid = pid
         self.name = name
+        self.bundleID = bundleID
         self.app = AXUIElementCreateApplication(pid)
         self.timeout = Float(timeout)
         self.queue = DispatchQueue(label: "niri.app.\(pid)", qos: .userInteractive)
@@ -251,7 +255,7 @@ final class AppWorker {
                 !settable.boolValue ? "tamanho fixo" :
                 (size.width < 50 || size.height < 50) ? "pequena demais" : nil
             out.append(WindowInfo(id: id, element: el, frame: CGRect(origin: pos, size: size),
-                                  title: title, subrole: subrole, skipReason: reason, uncertain: uncertain))
+                                  title: title, subrole: subrole, skipReason: reason, uncertain: uncertain, fullScreen: fullScreen))
         }
         return ScanResult(windows: out, focused: focused)
     }
@@ -288,13 +292,14 @@ final class AppWorker {
     }
 
     /// Resize fantasma: a janela sai da fita (os frames da fita são ignorados) e espera fora da tela, com
-    /// 1 pt na borda, até `attach`. Encolhendo, o tamanho novo vai antes, ainda na tela e por baixo do
+    /// 1 pt na borda direita, até `attach`. Encolhendo, o tamanho novo vai antes, ainda na tela e por baixo do
     /// vidro (fora da tela o Electron recusa resize): na volta ela já cabe no lugar e não invade a vizinha.
-    func park(_ id: CGWindowID, at p: CGPoint, shrinkTo size: CGSize?) {
+    func park(_ id: CGWindowID, screen: CGRect, y: Double, shrinkTo size: CGSize?) {
         lock.lock(); detached.insert(id); lock.unlock()
         queue.async {
             guard let el = self.elements[id] else { return }
             if let size { _ = AX.setSize(el, size) }
+            let p = CGPoint(x: screen.maxX - 1, y: y)
             _ = AX.setPosition(el, p)
             self.current[id] = CGRect(origin: p, size: size ?? self.current[id]?.size ?? .zero)
         }
@@ -322,6 +327,14 @@ final class AppWorker {
         }
     }
 
+    /// A janela saiu da fita sem fechar (tela cheia, minimizada, app escondido): para de mandar frame e de
+    /// conferir. Senão a conferência pós-animação devolvia o tamanho e a posição da fita pra uma janela em
+    /// tela cheia, em outro Space.
+    func forget(_ id: CGWindowID) {
+        lock.lock(); pending[id] = nil; lock.unlock()
+        queue.async { self.requested[id] = nil }
+    }
+
     /// Depois que a animação assenta (fora do caminho crítico): lê o frame real de cada janela.
     /// - Devolve pro lugar a que o usuário arrastou ou que o app moveu sozinho.
     /// - Janela inteira na tela e mais larga que o pedido = o app recusou encolher. Esse é o
@@ -342,7 +355,7 @@ final class AppWorker {
                       let s = AX.size(AX.copy(el, kAXSizeAttribute)) else { continue }
                 let onScreen = r.minX >= screen.minX && r.maxX <= screen.maxX
                 if onScreen && s.width > r.width + 1 { minWidths.append((id, s.width)) }
-                let origin = Self.origin(for: r, realWidth: s.width, screen: screen)
+                let origin = Self.origin(for: r, screen: screen)
                 var size = s
                 if onScreen && (s.width < r.width - 1 || abs(s.height - r.height) > 1) {
                     _ = AX.setSize(el, r.size)
@@ -360,17 +373,16 @@ final class AppWorker {
     }
 
     /// Janela estacionada: fatia de 1 pt na borda da tela.
-    private static func isParked(_ r: CGRect, screen: CGRect) -> Bool {
+    static func isParked(_ r: CGRect, screen: CGRect) -> Bool {
         r.maxX <= screen.minX + 1.5 || r.minX >= screen.maxX - 1.5
     }
 
-    /// Estacionada na esquerda: a posição depende da largura real, senão sobra mais que 1 pt
-    /// na tela (o Discord recusou encolher fora da tela e ficaram 24 pt visíveis).
-    private static func origin(for r: CGRect, realWidth: Double, screen: CGRect) -> CGPoint {
-        if isParked(r, screen: screen) && r.minX < screen.minX {
-            return CGPoint(x: r.maxX - realWidth, y: r.minY)
-        }
-        return r.origin
+    /// Toda estacionada fica na borda direita, com 1 pt à mostra, mesmo a que o layout põe na esquerda: lá a
+    /// posição não depende da largura. Na esquerda é x = 1 - largura, e com a largura velha (app que muda
+    /// sozinho, ou que recusa encolher fora da tela: o Discord ficou com 24 pt) sobrava um pedaço na tela. O
+    /// pulo de uma borda pra outra, quando ela volta pela esquerda, é de uma fatia de 1 pt e não aparece.
+    static func origin(for r: CGRect, screen: CGRect) -> CGPoint {
+        isParked(r, screen: screen) ? CGPoint(x: screen.maxX - 1, y: r.minY) : r.origin
     }
 
     private func drain() {
@@ -389,12 +401,12 @@ final class AppWorker {
             guard let el = elements[id] else { continue }
             requested[id] = r
             let now = current[id]
-            let real = now?.size ?? r.size
             // Estacionada não muda de tamanho: app Electron recusa resize fora da tela, e não
             // adianta gastar chamada com janela invisível. O resize acontece quando ela voltar.
             let parked = Self.isParked(r, screen: screen)
+            let real = now?.size ?? r.size
             let size = parked ? real : r.size
-            let origin = Self.origin(for: r, realWidth: real.width, screen: screen)
+            let origin = Self.origin(for: r, screen: screen)
             let moved = now?.origin != origin
             let resized = abs(real.width - size.width) > 0.5 || abs(real.height - size.height) > 0.5
             guard moved || resized else { continue }

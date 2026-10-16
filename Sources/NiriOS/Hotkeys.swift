@@ -2,9 +2,23 @@ import AppKit
 import NiriCore
 import os
 
-/// O nome de cada ação é a chave dela em "shortcuts" no config.json.
-enum Action: String, CaseIterable {
+/// O nome de cada ação fixa é a chave dela em "shortcuts" no config.json. As de workspace vêm de "workspaces".
+enum Action: Hashable {
     case grow, shrink, focusLeft, focusRight, toggleFullWidth, toggleDesktop
+    /// Vai pro workspace com esse nome / manda a janela focada pra ele.
+    case workspace(String), moveToWorkspace(String)
+
+    /// As ações de "shortcuts", na ordem do painel.
+    static let allCases: [Action] = [.grow, .shrink, .focusLeft, .focusRight, .toggleFullWidth, .toggleDesktop]
+    var rawValue: String { String(describing: self) }
+    init?(rawValue: String) {
+        guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
+        self = a
+    }
+
+    /// Segurar a tecla repete resize e navegação. Tela cheia e mesa alternando sem parar não fazem sentido, e
+    /// mandar pra outro workspace mandaria uma janela atrás da outra.
+    var repeats: Bool { [.grow, .shrink, .focusLeft, .focusRight].contains(self) }
 }
 
 /// Atalhos globais via CGEventTap.
@@ -118,8 +132,7 @@ final class HotkeyTap {
 
         if type == .keyDown {
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            // Segurar a tecla repete resize e navegação; tela cheia e mesa alternando sem parar não fazem sentido.
-            if !(isRepeat && (action == .toggleFullWidth || action == .toggleDesktop)) {
+            if !isRepeat || action.repeats {
                 DispatchQueue.main.async { self.handler(action) }
             }
         }

@@ -5,8 +5,29 @@ import NiriCore
 /// Salvar o arquivo recarrega na hora (ver `Settings`).
 ///
 ///     { "gap": 12, "topPadding": 0, "defaultColumnWidth": 0.5, "widthStep": 0.1, "stiffness": 800,
-///       "shortcuts": { "grow": ["option+=", "ctrl+option+up"] }, "ghostBorderColor": "#FF8800" }
+///       "shortcuts": { "grow": ["option+=", "ctrl+option+up"] }, "ghostBorderColor": "#FF8800",
+///       "workspaces": ["1", "2", { "name": "T", "apps": ["WezTerm"] }] }
 enum ResizeStyle: String { case photos, ghost, live }
+
+/// Um workspace do config. Os atalhos dele ficam em `Config.shortcuts`, como `.workspace(name)` e
+/// `.moveToWorkspace(name)`.
+struct WorkspaceRule: Equatable {
+    var name: String
+    /// Apps cujas janelas novas abrem aqui: o nome como no Dock ou o bundle id, sem diferença de maiúscula.
+    /// Terminando em * vale como começo do nome ("Adobe Premiere*" pega todas as versões).
+    var apps: [String] = []
+    /// App aberto (`open -a`) quando o atalho traz pra cá e não tem janela, como o
+    /// `alt-t = ['workspace T', 'exec-and-forget open -a WezTerm']` do AeroSpace.
+    var open: String?
+
+    func matches(app name: String, bundleID: String?) -> Bool {
+        apps.contains { rule in
+            [name, bundleID].compactMap { $0 }.contains {
+                rule.hasSuffix("*") ? $0.lowercased().hasPrefix(rule.dropLast().lowercased()) : $0.caseInsensitiveCompare(rule) == .orderedSame
+            }
+        }
+    }
+}
 
 struct Config {
     /// Espaço entre janelas e entre janela e borda da tela (pt).
@@ -40,6 +61,11 @@ struct Config {
     /// vídeo, que toca só com a mesa à mostra. nil = não mexe no do macOS (e devolve o de antes, se era nosso).
     var wallpaper: URL?
     var wallpaperEffect = WallpaperEffect.none
+    /// Na ordem em que ficam lado a lado. Sem a chave no arquivo: 1 a 4.
+    var workspaces: [WorkspaceRule] = []
+    /// Comando (sh) rodado a cada troca de workspace e ao abrir, com o nome em NIRI_WORKSPACE. Pra SketchyBar:
+    /// `sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE`.
+    var onWorkspaceChange: String?
     /// O que estava errado no arquivo (aparece no log e no painel).
     var warnings: [String] = []
 
@@ -52,8 +78,9 @@ struct Config {
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
-    static let path = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/niri-os/config.json")
+    /// `NIRI_CONFIG=<arquivo>` usa outro (pra testar uma config sem mexer na de uso).
+    static let path = ProcessInfo.processInfo.environment["NIRI_CONFIG"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/niri-os/config.json")
 
     static func load() -> Config {
         var c = Config()
@@ -61,12 +88,15 @@ struct Config {
             log("config: \(m)")
             c.warnings.append(m)
         }
-        guard let data = try? Data(contentsOf: path) else { return c }
-        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            warn("o arquivo não é um JSON válido; usando os padrões")
-            return c
+        // Sem arquivo ou com JSON inválido, tudo segue com os padrões (inclusive os workspaces).
+        var obj: [String: Any] = [:]
+        let data = try? Data(contentsOf: path)
+        if let data {
+            if let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { obj = o }
+            else { warn("o arquivo não é um JSON válido; usando os padrões") }
         }
         func num(_ key: String) -> Double? { (obj[key] as? NSNumber)?.doubleValue }
+        func text(_ v: Any?) -> String? { v as? String ?? (v as? NSNumber)?.stringValue }
         if let v = num("gap") { c.gap = v }
         if let v = num("topPadding") { c.topPadding = v }
         if let v = num("bottomPadding") { c.bottomPadding = v }
@@ -89,9 +119,29 @@ struct Config {
                 return nil
             }
         }
-        // O mesmo atalho em duas ações: vale a primeira, na ordem do painel.
+        // Workspaces: nome sozinho ou {name, apps, key, moveKey}. Sem key/moveKey: Option+<nome> e
+        // Option+Shift+<nome>, se o nome for uma tecla; "" ou [] desliga.
+        for item in obj["workspaces"] as? [Any] ?? ["1", "2", "3", "4"] {
+            let o = item as? [String: Any] ?? [:]
+            guard let name = text(item) ?? text(o["name"]), !name.isEmpty else { warn("workspace sem nome"); continue }
+            guard !c.workspaces.contains(where: { $0.name == name }) else { warn("workspace '\(name)' repetido"); continue }
+            c.workspaces.append(WorkspaceRule(name: name, apps: o["apps"] as? [String] ?? [], open: text(o["open"])))
+            func keys(_ field: String, _ fallback: String) -> [Shortcut] {
+                guard let v = o[field] else { return Shortcut(fallback + name.lowercased()).map { [$0] } ?? [] }
+                return ((v as? String).map { [$0] } ?? v as? [String] ?? []).filter { !$0.isEmpty }.compactMap {
+                    if let k = Shortcut($0) { return k }
+                    warn("atalho inválido em \(field) do workspace \(name): '\($0)'")
+                    return nil
+                }
+            }
+            c.shortcuts[.workspace(name)] = keys("key", "option+")
+            c.shortcuts[.moveToWorkspace(name)] = keys("moveKey", "option+shift+")
+        }
+        if c.workspaces.isEmpty { c.workspaces = [WorkspaceRule(name: "1")] }  // "workspaces": [] = um só, sem atalho
+        c.onWorkspaceChange = (obj["onWorkspaceChange"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        // O mesmo atalho em duas ações: vale a primeira, na ordem do painel (os workspaces por último).
         var seen: [Shortcut: Action] = [:]
-        for a in Action.allCases {
+        for a in Action.allCases + c.workspaces.flatMap({ [Action.workspace($0.name), .moveToWorkspace($0.name)] }) {
             c.shortcuts[a] = c.shortcuts[a, default: []].filter { k in
                 if let other = seen[k] { warn("\(k) está em \(other.rawValue) e \(a.rawValue); vale \(other.rawValue)"); return false }
                 seen[k] = a
@@ -116,9 +166,9 @@ struct Config {
             c.wallpaperEffect = .none
         }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "resizeStyle", "stiffness", "axTimeout",
-                          "centerFocusedColumn", "shortcuts", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect"]
+                          "centerFocusedColumn", "shortcuts", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
-        log("config carregada de \(path.path)")
+        if data != nil { log("config carregada de \(path.path)") }
         return c
     }
 

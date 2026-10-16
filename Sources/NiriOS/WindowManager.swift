@@ -15,7 +15,12 @@ final class WindowManager: NSObject {
     private(set) var config: Config
     private let verbose: Bool
     private let dev: DevOptions
-    private var layout: Layout
+    private var workspaces: Workspaces
+    /// A fita do workspace na tela.
+    private var layout: Layout {
+        get { workspaces.current }
+        _modify { yield &workspaces.current }
+    }
     private var workers: [pid_t: AppWorker] = [:]
     /// Janelas na fita: de qual app são e o elemento AX (usado pra focar).
     private var tracked: [CGWindowID: (pid: pid_t, element: AXUIElement)] = [:]
@@ -26,6 +31,23 @@ final class WindowManager: NSObject {
     /// Janela que cada app considera a sua focada (do scan e dos eventos de foco do app).
     /// Se é a mesma que vamos focar, ativar o app basta (ver `Private.focus`).
     private var appFocus: [pid_t: CGWindowID] = [:]
+    /// O último app ativado pelo macOS (Cmd+Tab, Dock ou pedido nosso), pra saber se um aviso de foco veio disso.
+    private var lastActivation: (pid: pid_t, time: Double)?
+    /// Quando uma janela do workspace da tela fechou, minimizou ou o app dela escondeu ou saiu.
+    private var lastVanish = 0.0
+    /// Onde estava cada janela que saiu da fita sem fechar (tela cheia, minimizada, app escondido): o workspace,
+    /// as vizinhas e a coluna (largura), pra ela voltar igual, e não como janela nova (à direita da focada, no
+    /// workspace da tela, com 50%). Some quando ela volta, fecha ou o app sai.
+    private struct Away {
+        let pid: pid_t, workspace: String, left: CGWindowID?, right: CGWindowID?, column: Column
+    }
+    private var away: [CGWindowID: Away] = [:]
+    /// A janela que ficou com o teclado quando a tela foi pra um workspace vazio (o macOS não tira o foco dela).
+    /// Aviso dela não leva de volta: visto no uso, 1,5 s depois de ir pro 4 vazio o King Bot e o WhatsApp
+    /// avisavam foco de novo e a tela voltava sozinha. Pra voltar, o atalho.
+    private var leftBehind: CGWindowID?
+    /// Largura mínima lida uma vez, esperando a 2ª leitura (ver `verified`).
+    private var minCandidates: [CGWindowID: Double] = [:]
     private var link: CADisplayLink?
     private var started = false
     private var initialScans: [pid_t: ScanResult] = [:]
@@ -35,6 +57,8 @@ final class WindowManager: NSObject {
     private var maxTickGap = 0.0
     /// Só na instância de verdade: teste (--pid, --script) não mexe no papel de parede.
     private var wallpaper: WallpaperHost?
+    /// `niri-os --workspace <nome>` (o clique na SketchyBar, por exemplo) chega por aqui.
+    static let workspaceRequest = Notification.Name("niri-os.workspace")
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
         tap.setShortcuts(config.shortcuts)
@@ -52,7 +76,7 @@ final class WindowManager: NSObject {
         if dev.pid != nil {
             geo.area = dev.area ?? CGRect(x: geo.area.minX, y: geo.area.maxY - 340, width: geo.area.width, height: 340)
         }
-        self.layout = Layout(area: geo.area, bounds: geo.bounds, config: config.layout)
+        self.workspaces = Workspaces(names: config.workspaces.map(\.name), area: geo.area, bounds: geo.bounds, config: config.layout)
         super.init()
     }
 
@@ -70,8 +94,9 @@ final class WindowManager: NSObject {
         return (area, toAX(screen.frame))
     }
 
-    /// Config recarregada (arquivo salvo ou painel). Atalhos e borda do vidro valem na hora; gap, margens,
-    /// mola e centralização animam as janelas pro layout novo. `resizeStyle` e `axTimeout` só ao reiniciar.
+    /// Config recarregada (arquivo salvo ou painel). Atalhos, borda do vidro e regras de app valem na hora; gap,
+    /// margens, mola, centralização e a lista de workspaces animam as janelas pro layout novo. `resizeStyle` e
+    /// `axTimeout` só ao reiniciar.
     func apply(_ c: Config) {
         let old = config
         config = c
@@ -82,10 +107,11 @@ final class WindowManager: NSObject {
             log("config: resizeStyle e axTimeout mudam só ao reiniciar o niri-os")
         }
         guard dev.pid == nil else { return }
-        let now = CACurrentMediaTime(), geo = Self.screenGeometry(c)
-        guard c.layout != layout.config || geo.area != layout.area else { return }
-        layout.setConfig(c.layout, at: now)
-        layout.setArea(geo.area, bounds: geo.bounds, at: now)
+        let now = CACurrentMediaTime(), geo = Self.screenGeometry(c), names = c.workspaces.map(\.name)
+        guard c.layout != layout.config || geo.area != layout.area || names != workspaces.names else { return }
+        workspaces.setNames(names, at: now)
+        workspaces.setConfig(c.layout, at: now)
+        workspaces.setArea(geo.area, bounds: geo.bounds, at: now)
         animate()
     }
 
@@ -130,6 +156,7 @@ final class WindowManager: NSObject {
         }
         ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self?.lastActivation = (app.processIdentifier, CACurrentMediaTime())
             self?.activated(app.processIdentifier)
             // Rescan aqui também: se algum evento de janela se perdeu, ativar o app corrige.
             self?.workers[app.processIdentifier]?.requestScan()
@@ -137,6 +164,18 @@ final class WindowManager: NSObject {
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.screenChanged()
+        }
+        // Entrar e sair de tela cheia troca de Space e não manda nenhum aviso de janela que a gente escute:
+        // sem reler, a janela que saiu da tela cheia ficava solta por cima ou por trás da fita até ser
+        // minimizada. Relê de novo 0,5 s depois, quando a animação de saída do macOS já acabou.
+        ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.rescanAll()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.rescanAll() }
+        }
+        if dev.pid == nil && dev.script.isEmpty {
+            DistributedNotificationCenter.default().addObserver(forName: Self.workspaceRequest, object: nil, queue: .main) { [weak self] n in
+                if let name = n.object as? String { self?.perform(.workspace(name)) }
+            }
         }
 
         for app in NSWorkspace.shared.runningApplications { addApp(app) }
@@ -151,12 +190,16 @@ final class WindowManager: NSObject {
         } else {
             guard app.activationPolicy == .regular, pid != getpid(), workers[pid] == nil else { return }
         }
-        let w = AppWorker(pid: pid, name: app.localizedName ?? "pid \(pid)", timeout: config.axTimeout,
-                          anySubrole: dev.pid != nil)
+        let w = AppWorker(pid: pid, name: app.localizedName ?? "pid \(pid)", bundleID: app.bundleIdentifier,
+                          timeout: config.axTimeout, anySubrole: dev.pid != nil)
         w.onScan = { [weak self] pid, result in self?.scanned(pid, result) }
         w.onFocus = { [weak self] pid, id in self?.focusChanged(pid, id) }
         workers[pid] = w
         w.start()
+    }
+
+    private func rescanAll() {
+        for w in workers.values { w.requestScan() }
     }
 
     private func removeApp(_ pid: pid_t) {
@@ -164,15 +207,17 @@ final class WindowManager: NSObject {
         w.stop()
         initialScans[pid] = nil
         appFocus[pid] = nil
+        away = away.filter { $0.value.pid != pid }
         let gone = tracked.filter { $0.value.pid == pid }.map(\.key)
         guard !gone.isEmpty else { return }
         let wasFocused = layout.focusedWindow
         let now = CACurrentMediaTime()
         for id in gone {
+            if workspaces.index(of: id) == workspaces.active { lastVanish = now }
             tracked[id] = nil
-            layout.remove(id, at: now)
+            workspaces.remove(id, at: now)
         }
-        if let f = layout.focusedWindow, f != wasFocused { requestFocus(f) }
+        if let f = layout.focusedWindow, f != wasFocused { deferFocus(f) }
         animate()
     }
 
@@ -187,8 +232,9 @@ final class WindowManager: NSObject {
         }
     }
 
-    /// Monta a fita com as janelas que já estavam abertas, na ordem em que aparecem na tela,
-    /// mantendo a largura de cada uma (arredondada pro passo de resize).
+    /// Monta as fitas com as janelas que já estavam abertas, na ordem em que aparecem na tela,
+    /// mantendo a largura de cada uma (arredondada pro passo de resize). Cada uma vai pro workspace salvo,
+    /// senão pro do app no config, senão pro 1º.
     private func finishStartup() {
         guard !started else { return }
         started = true
@@ -201,29 +247,33 @@ final class WindowManager: NSObject {
         for c in (dev.pid == nil ? Self.loadState() : []) {
             guard let (pid, w) = byID[c.window] else { continue }
             tracked[w.id] = (pid, w.element)
-            layout.append(w.id, proportion: c.proportion, savedProportion: c.saved, minWidth: c.minWidth)
+            let k = c.workspace.flatMap(workspaces.index(named:)) ?? workspace(forApp: pid) ?? 0
+            workspaces[k].append(w.id, proportion: c.proportion, savedProportion: c.saved, minWidth: c.minWidth)
             restored.insert(w.id)
         }
         for (pid, w) in all where !restored.contains(w.id) {
             tracked[w.id] = (pid, w.element)
-            layout.append(w.id, proportion: layout.proportion(forWidth: w.frame.width, step: config.widthStep))
+            workspaces[workspace(forApp: pid) ?? 0].append(w.id, proportion: layout.proportion(forWidth: w.frame.width, step: config.widthStep))
         }
         if !restored.isEmpty { log("\(restored.count) janelas restauradas na ordem salva") }
         let now = CACurrentMediaTime()
-        // Foco na janela do app da frente. Se ele não informar a janela focada pela Acessibilidade,
-        // vale a 1ª janela dele na fita.
+        // Foco na janela do app da frente, e o workspace dela na tela. Se ele não informar a janela focada
+        // pela Acessibilidade, vale a 1ª janela dele.
         if let pid = Self.frontPid(),
            let f = initialScans[pid]?.focused.flatMap({ tracked[$0] != nil ? $0 : nil })
-               ?? layout.windows.first(where: { tracked[$0]?.pid == pid }) {
+               ?? workspaces.windows.first(where: { tracked[$0]?.pid == pid }) {
+            workspaces.switchTo(workspaces.index(of: f) ?? 0, at: now)
             layout.focus(f, at: now)
         }
         if verbose, let f = layout.focusedWindow, let t = tracked[f] {
-            log("foco inicial: \(workers[t.pid]?.name ?? "?") (janela \(f))")
+            log("foco inicial: \(workers[t.pid]?.name ?? "?") (janela \(f)), workspace \(workspaces.names[workspaces.active])")
         }
-        layout.retarget(at: now)
-        layout.snapToTargets()
+        for k in 0..<workspaces.count { workspaces[k].retarget(at: now) }
+        workspaces.snapToTargets()
         initialScans = [:]
-        log("\(all.count) janelas na fita, \(workers.count) apps observados")
+        announceWorkspace()
+        let counts = (0..<workspaces.count).map { "\(workspaces.names[$0]): \(workspaces[$0].columns.count)" }
+        log("\(all.count) janelas (\(counts.joined(separator: ", "))), \(workers.count) apps observados")
         animate()
         if !dev.script.isEmpty { runScript() }
     }
@@ -231,9 +281,15 @@ final class WindowManager: NSObject {
     /// Dono da janela normal mais à frente na tela. Logo depois de abrir, o NSWorkspace ainda diz que o
     /// app da frente é o próprio niri-os, e o foco inicial caía na 1ª coluna.
     private static func frontPid() -> pid_t? {
+        frontWindowInfo()?[kCGWindowOwnerPID as String] as? pid_t ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    /// A janela normal mais à frente na tela, pro WindowServer (não fala com o app).
+    private static func frontWindow() -> CGWindowID? { frontWindowInfo()?[kCGWindowNumber as String] as? CGWindowID }
+
+    private static func frontWindowInfo() -> [String: Any]? {
         let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-        let front = list.first { ($0[kCGWindowLayer as String] as? Int) == 0 && ($0[kCGWindowOwnerPID as String] as? pid_t) != getpid() }
-        return front?[kCGWindowOwnerPID as String] as? pid_t ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return list.first { ($0[kCGWindowLayer as String] as? Int) == 0 && ($0[kCGWindowOwnerPID as String] as? pid_t) != getpid() }
     }
 
     /// Executa as ações do --script com 0,6 s entre elas, confere o resultado e sai.
@@ -254,7 +310,7 @@ final class WindowManager: NSObject {
     }
 
     private func verifyAndExit() {
-        let expected = layout.frames(at: CACurrentMediaTime())
+        let expected = workspaces.frames(at: CACurrentMediaTime())
         let group = DispatchGroup()
         var actual: [CGWindowID: CGRect] = [:]
         for w in workers.values {
@@ -264,13 +320,15 @@ final class WindowManager: NSObject {
                 group.leave()
             }
         }
+        let screen = layout.bounds
         group.notify(queue: .main) {
             var bad = 0
             for f in expected {
-                let a = actual[f.window]
-                let ok = a == f.rect
+                // Estacionada: só a posição (1 pt na borda direita, com a largura que tiver; ver `AppWorker.origin`).
+                let a = actual[f.window], parked = AppWorker.isParked(f.rect, screen: screen)
+                let ok = parked ? a?.origin == AppWorker.origin(for: f.rect, screen: screen) : a == f.rect
                 if !ok { bad += 1 }
-                log("janela \(f.window): esperado \(f.rect)  real \(a.map { "\($0)" } ?? "?")  \(ok ? "ok" : "DIFERENTE")")
+                log("janela \(f.window): esperado \(parked ? "1 pt na borda direita" : "\(f.rect)")  real \(a.map { "\($0)" } ?? "?")  \(ok ? "ok" : "DIFERENTE")")
             }
             log(bad == 0 ? "verificação: tudo no lugar" : "verificação: \(bad) janela(s) fora do lugar")
             self.saveState()  // modo normal: sai como o SIGUSR1, janelas onde estão
@@ -286,17 +344,34 @@ final class WindowManager: NSObject {
         let current = Set(tileable.map(\.id))
         let uncertain = Set(windows.filter(\.uncertain).map(\.id))
         let known = Set(tracked.filter { $0.value.pid == pid }.map(\.key))
-        let removed = known.subtracting(current).subtracting(uncertain)
+        let listed = Set(windows.map(\.id))
+        // A Acessibilidade só lista as janelas do Space atual. Fora da lista mas ainda num Space é janela de
+        // outro Space (a pessoa foi pra uma tela cheia ou outro desktop), não fechada: fica na fita. Sem isso,
+        // ir pra outro Space tirava uma janela de cada app, e na volta elas entravam como novas: fora do lugar,
+        // com 50% de largura e no workspace da regra (o Zed voltou do 4 pro 3; visto no uso em 2026-10-16).
+        let removed = known.subtracting(current).subtracting(uncertain).filter { listed.contains($0) || !Private.isOnAnySpace($0) }
         let wasFocused = layout.focusedWindow
         var changed = false
 
+        away = away.filter { $0.value.pid != pid || listed.contains($0.key) || Private.isOnAnySpace($0.key) }  // as que fecharam de vez
+        // A focada foi pra tela cheia: a pessoa está nela, num Space à parte. Focar a vizinha tirava ela de lá.
+        let toFullScreen = windows.contains { $0.fullScreen && $0.id == wasFocused }
         for id in removed {
+            // Ainda na lista do app (tela cheia, minimizada, app escondido): guarda onde estava pra volta.
+            let k = workspaces.index(of: id), cols = k.map { workspaces[$0].windows } ?? [], i = cols.firstIndex(of: id)
+            if k == workspaces.active { lastVanish = now }
             tracked[id] = nil
-            layout.remove(id, at: now)
+            let column = workspaces.remove(id, at: now)
+            if listed.contains(id), let k, let i, let column {
+                away[id] = Away(pid: pid, workspace: workspaces.names[k], left: i > 0 ? cols[i - 1] : nil,
+                                right: i + 1 < cols.count ? cols[i + 1] : nil, column: column)
+            }
+            workers[pid]?.forget(id)
             changed = true
         }
         let isFront = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-        var added: Set<CGWindowID> = []
+        let home = workspace(forApp: pid)
+        var added: [CGWindowID] = []
         for w in tileable.sorted(by: { $0.frame.minX < $1.frame.minX }) {
             if known.contains(w.id) {
                 tracked[w.id] = (pid, w.element)
@@ -304,18 +379,35 @@ final class WindowManager: NSObject {
             }
             tracked[w.id] = (pid, w.element)
             // Como no niri: janela nova entra à direita da focada e ganha foco (se o app está na frente).
-            layout.insert(w.id, focus: isFront || result.focused == w.id, at: now)
-            added.insert(w.id)
+            // Voltando (de tela cheia, minimizada, app escondido), vai pro lugar de antes: o mesmo workspace,
+            // entre as mesmas vizinhas, se ainda estão lá. App com workspace no config abre lá; o resto, no da tela.
+            let back = away.removeValue(forKey: w.id)
+            let k = back.flatMap { workspaces.index(named: $0.workspace) } ?? home ?? workspaces.active
+            let focus = isFront || result.focused == w.id
+            if let back {
+                let position = back.left.flatMap { workspaces[k].index(of: $0) }.map { $0 + 1 } ?? back.right.flatMap { workspaces[k].index(of: $0) }
+                workspaces[k].insert(back.column, position: position, focus: focus, at: now)
+            } else {
+                workspaces[k].insert(w.id, focus: focus, at: now)
+            }
+            added.append(w.id)
             changed = true
         }
         guard changed else { return }
         if verbose { log("\(workers[pid]?.name ?? "?"): +\(added.count) -\(removed.count) janelas") }
+        // App na frente com janela nova em outro workspace (a pessoa acabou de abrir ou de mostrar o app): a
+        // tela vai junto, pro da janela focada dele se ela é uma das novas.
+        if isFront, let f = result.focused.flatMap({ added.contains($0) ? $0 : nil }) ?? added.first,
+           let k = workspaces.index(of: f), k != workspaces.active {
+            return switchWorkspace(to: k, focusing: f)
+        }
         // A focada fechou: o foco vai pra vizinha que o layout escolheu, não pra onde o macOS quiser.
-        if let f = layout.focusedWindow, f != wasFocused, !added.contains(f) { requestFocus(f) }
+        if let f = layout.focusedWindow, f != wasFocused, !added.contains(f), !toFullScreen { deferFocus(f) }
         animate()
     }
 
     private func focusChanged(_ pid: pid_t, _ id: CGWindowID) {
+        let changed = appFocus[pid] != id
         appFocus[pid] = id
         let now = CACurrentMediaTime()
         if let p = pendingFocus {
@@ -327,8 +419,14 @@ final class WindowManager: NSObject {
                 pendingFocus = nil
             }
         }
+        guard tracked[id] != nil, let k = workspaces.index(of: id) else { return }
+        if k != workspaces.active {
+            guard isUserSwitch(pid, id, changed: changed, at: now) else { return }
+            if verbose { log("foco em \(workers[pid]?.name ?? "?") (\(changed ? "trocou de janela" : "app ativado")), no workspace \(workspaces.names[k]): vai pra lá") }
+            return switchWorkspace(to: k, focusing: id)
+        }
         // Com a mesa à mostra, foco em outra janela (Cmd+Tab, Dock) traz a fita de volta (ver `activated`).
-        guard tracked[id] != nil, layout.focusedWindow != id else { return }
+        guard layout.focusedWindow != id else { return }
         if verbose && layout.showsDesktop { log("foco em \(workers[pid]?.name ?? "?") com a mesa à mostra: fita de volta") }
         layout.focus(id, at: now)
         animate()
@@ -348,11 +446,37 @@ final class WindowManager: NSObject {
         animate()
     }
 
+    /// Foco numa janela de outro workspace só troca de workspace quando foi a pessoa: o app está na frente e
+    /// trocou de janela (Cmd+`), ou acabou de ser ativado (Cmd+Tab, Dock) e a janela veio pra frente. Não trocam:
+    /// a conferência de foco (mesma janela, sem ativação; desfazia a ida pra um workspace vazio), o clique na
+    /// mesa (ativa o Finder sem trazer a janela dele pra frente) e o macOS escolhendo outro app ou janela
+    /// porque uma daqui fechou, minimizou ou o app dela escondeu ou saiu. Esse aviso chega antes ou depois da
+    /// leitura que tira a janela da fita: antes, a focada daqui já saiu da tela; depois, `lastVanish`.
+    private func isUserSwitch(_ pid: pid_t, _ id: CGWindowID, changed: Bool, at now: Double) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, now - lastVanish > 0.5, id != leftBehind else { return false }
+        let activated = lastActivation.map { $0.pid == pid && now - $0.time < 0.5 } ?? false
+        guard changed || (activated && Self.frontWindow() == id) else { return false }
+        return layout.focusedWindow.map(Self.isOnScreen) ?? true
+    }
+
+    /// Na tela pro WindowServer (estacionada com 1 pt conta; fechada, minimizada ou de app escondido, não).
+    /// Não fala com o app.
+    private static func isOnScreen(_ id: CGWindowID) -> Bool {
+        let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]])?.first
+        return info?[kCGWindowIsOnscreen as String] as? Bool ?? false
+    }
+
+    /// O workspace que o config dá pro app (pelo nome dele ou pelo bundle id), se algum dá.
+    private func workspace(forApp pid: pid_t) -> Int? {
+        guard let w = workers[pid], let rule = config.workspaces.first(where: { $0.matches(app: w.name, bundleID: w.bundleID) }) else { return nil }
+        return workspaces.index(named: rule.name)
+    }
+
     private func screenChanged() {
         guard dev.pid == nil else { return }
         let geo = Self.screenGeometry(config)
         guard geo.area != layout.area || geo.bounds != layout.bounds else { return }
-        layout.setArea(geo.area, bounds: geo.bounds, at: CACurrentMediaTime())
+        workspaces.setArea(geo.area, bounds: geo.bounds, at: CACurrentMediaTime())
         animate()
     }
 
@@ -361,6 +485,16 @@ final class WindowManager: NSObject {
     private func perform(_ action: Action) {
         guard global == nil else { queuedAction = action; return }  // roda quando a transição acabar
         let now = CACurrentMediaTime()
+        if case .workspace(let name) = action, let k = workspaces.index(named: name) {
+            // Com a mesa à mostra, a fita sai de cena do mesmo jeito (ver `Workspaces.switchTo`).
+            if k != workspaces.active { switchWorkspace(to: k) }
+            // Vazio (de novo ou já estava): abre o app dele. A janela entra aqui (ou no workspace do app).
+            if layout.columns.isEmpty, let app = config.workspaces.first(where: { $0.name == name })?.open, dev.pid == nil {
+                if verbose { log("workspace \(name) vazio: abrindo \(app)") }
+                run("/usr/bin/open", ["-a", app])
+            }
+            return
+        }
         if action == .toggleDesktop || layout.showsDesktop {
             // Com a mesa à mostra, qualquer atalho traz a fita de volta (e faz o que pediu).
             layout.setDesktop(action == .toggleDesktop && !layout.showsDesktop, at: now)
@@ -370,25 +504,60 @@ final class WindowManager: NSObject {
         }
         switch action {
         case .focusLeft, .focusRight:
-            // Tecla de novo com a fita andando: só rola, e o app onde ela parar é ativado quando assentar.
-            // App ativado ou desativado redesenha e para de responder AX; ativando cada app atravessado,
-            // as janelas dele congelavam no meio da rolagem (spam de 6 s, maior intervalo: Arc 403 ms,
-            // outro app 326, WhatsApp 208; a main em 8,7).
-            // Experimento NIRI_FOCUS_DELAY (ms): com a fita parada, a rolagem começa esse tanto depois
-            // da tecla, o tempo do app que ganha ou perde foco se redesenhar (WhatsApp: 25 a 45 ms).
-            let moving = link?.isPaused == false
-            guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now + (moving ? 0 : focusDelay)) else {
+            // Só rola; o app onde a fita parar é ativado no fim (ver `deferFocus`).
+            guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now) else {
                 if verbose { log("ação \(action): já está na ponta da fita") }
                 return
             }
-            if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))\(moving ? ", ativa ao assentar" : "")") }
-            if moving { deferFocus(id) } else { requestFocus(id) }
+            if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
+            deferFocus(id)
         case .grow, .shrink, .toggleFullWidth:
             if transition != nil, startGlobal(action, at: now) { return }
             if ghost != nil { resizeWithGhost(action, at: now) } else { resize(&layout, action, at: now) }
-        case .toggleDesktop: break
+        case .moveToWorkspace(let name):
+            guard let k = workspaces.index(named: name), k != workspaces.active, let id = layout.focusedWindow else { return }
+            workspaces.move(id, to: k, at: now)
+            if verbose { log("ação \(action): janela \(id) foi pro workspace \(name)") }
+            if let f = layout.focusedWindow { deferFocus(f) }
+        case .toggleDesktop, .workspace: break
         }
         animate()
+    }
+
+    /// Troca de workspace. `focusing`: janela que já tem o foco do macOS (Cmd+Tab pra ela, ou janela nova do
+    /// app da frente). Senão, o foco vai pra focada do workspace novo no fim da animação, como no `< >`.
+    /// Workspace vazio não mexe no foco.
+    private func switchWorkspace(to k: Int, focusing id: CGWindowID? = nil) {
+        let now = CACurrentMediaTime(), previous = layout.focusedWindow
+        workspaces.switchTo(k, at: now)
+        deferredFocus = nil
+        leftBehind = layout.focusedWindow == nil && id == nil ? leftBehind ?? previous : nil
+        if let id {
+            layout.focus(id, at: now)
+        } else if let f = layout.focusedWindow {
+            deferFocus(f)
+        }
+        if verbose { log("workspace \(workspaces.names[k]) (\(layout.columns.count) janelas)") }
+        animate()
+        announceWorkspace()
+    }
+
+    /// Roda o `onWorkspaceChange` do config (a SketchyBar, por exemplo) com o nome em NIRI_WORKSPACE. Teste
+    /// (--pid, --script) não roda: mexeria na barra de quem está usando o Mac.
+    private func announceWorkspace() {
+        guard let cmd = config.onWorkspaceChange, dev.pid == nil, dev.script.isEmpty else { return }
+        run("/bin/sh", ["-c", cmd], env: ["NIRI_WORKSPACE": workspaces.names[workspaces.active]])
+    }
+
+    /// Processo solto: não espera ele terminar. Abrir um processo custa ~2 ms, fora da main.
+    private func run(_ exe: String, _ args: [String], env: [String: String] = [:]) {
+        DispatchQueue.global(qos: .utility).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: exe)
+            p.arguments = args
+            p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 }
+            do { try p.run() } catch { log("não consegui rodar \(exe): \(error.localizedDescription)") }
+        }
     }
 
     private func resize(_ l: inout Layout, _ action: Action, at t: Double) {
@@ -398,7 +567,7 @@ final class WindowManager: NSObject {
             if config.widthPresets.isEmpty { l.resizeFocused(by: Double(dir) * config.widthStep, at: t) }
             else { l.resizeFocused(toPresetIn: config.widthPresets, direction: dir, at: t) }
         case .toggleFullWidth: l.toggleFullWidthFocused(at: t)
-        case .focusLeft, .focusRight, .toggleDesktop: break
+        default: break
         }
     }
 
@@ -442,7 +611,9 @@ final class WindowManager: NSObject {
     private func modifiersChanged(_ down: Bool) {
         modifiersHeld = down
         if transition != nil { prefetchPhotos(down) }
-        if !down { returnGhosts() }  // ver `step`
+        guard !down else { return }
+        returnGhosts()  // ver `step`
+        if let id = deferredFocus, workspaces.isNear(at: CACurrentMediaTime(), within: Self.focusDistance) { requestFocus(id) }
     }
 
     private func prefetchPhotos(_ optionDown: Bool) {
@@ -649,8 +820,7 @@ final class WindowManager: NSObject {
         ghost.show(id, of: t.pid, at: r)
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
-        workers[t.pid]?.park(id, at: CGPoint(x: layout.bounds.maxX - layout.config.sliver, y: r.minY),
-                             shrinkTo: to.width < r.width ? to.size : nil)
+        workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: to.width < r.width ? to.size : nil)
     }
 
     /// Onde a janela fica quando a fita parar.
@@ -710,16 +880,25 @@ final class WindowManager: NSObject {
         }
     }
 
-    private let focusDelay = (ProcessInfo.processInfo.environment["NIRI_FOCUS_DELAY"].flatMap(Double.init) ?? 0) / 1000
-    /// Foco que espera a fita assentar (ver `perform`).
+    /// Foco que espera a animação (ver `deferFocus`).
     private var deferredFocus: CGWindowID?
+    /// O foco adiado sai quando falta menos que isso (pt) pra toda mola chegar: ~0,3 s depois da tecla, contra
+    /// ~0,4 s pra assentar de vez. Se o app travar redesenhando, a janela dele para a ≤ 3 pt do lugar.
+    private static let focusDistance = 3.0
 
-    /// Enquanto espera, eventos de foco de outros apps são eco (senão o foco da 1ª tecla puxaria o
-    /// layout de volta no meio do spam).
+    /// Ativar um app no meio da animação trava ele e quem perde o foco: os dois redesenham e param de responder
+    /// AX. Medido no uso, trocando de workspace: Arc parado 208 ms ao perder o foco, WhatsApp 73 ms, e a
+    /// main do niri-os perdendo um frame (21 ms) em 8 de 40 trocas, todas com ativação no começo (nos painéis,
+    /// sem ativação, 8,4 ms). Então o foco espera a animação quase acabar e os modificadores do atalho
+    /// subirem: navegando com o Option seguro, nenhum app atravessado é ativado. Enquanto espera, eventos de
+    /// foco de outros apps são eco (senão o foco da 1ª tecla puxaria o layout de volta).
     private func deferFocus(_ id: CGWindowID) {
         deferredFocus = id
         pendingFocus = (id, CACurrentMediaTime())
     }
+
+    /// Modificadores do atalho seguros, se o tap e o estado do teclado concordam (na dúvida, soltos).
+    private var shortcutHeld: Bool { modifiersHeld && hotkeys.modifiersHeld() }
 
     private func requestFocus(_ id: CGWindowID) {
         deferredFocus = nil
@@ -759,15 +938,16 @@ final class WindowManager: NSObject {
 
     private func step() {
         let now = CACurrentMediaTime()
-        let settled = layout.isSettled(at: now)
-        if settled { layout.snapToTargets() }
+        let settled = workspaces.isSettled(at: now)
+        if settled { workspaces.snapToTargets() }
 
         var byApp: [pid_t: [(CGWindowID, CGRect)]] = [:]
-        let frames = layout.frames(at: now)
+        let frames = workspaces.frames(at: now)
         for f in frames {
             if let t = tracked[f.window] { byApp[t.pid, default: []].append((f.window, f.rect)) }
         }
         for (pid, frames) in byApp { workers[pid]?.submit(frames, screen: layout.bounds, firstFrame: ticks == 0) }
+        if let id = deferredFocus, !shortcutHeld, workspaces.isNear(at: now, within: Self.focusDistance) { requestFocus(id) }
         ghost?.update(frames)
         if let g = global, g.running {
             let fr = Dictionary(uniqueKeysWithValues: frames.filter { g.windows.contains($0.window) }.map { ($0.window, $0.rect) })
@@ -784,7 +964,7 @@ final class WindowManager: NSObject {
             // `optionIdle`: apertando +/- várias vezes, a fita parava entre uma tecla e outra e a página
             // aparecia pelo vidro até a tecla seguinte. Segurado só se o tap e o estado do teclado
             // concordam: na dúvida, volta.
-            let held = modifiersHeld && hotkeys.modifiersHeld()
+            let held = shortcutHeld
             if ghosted.isEmpty {
                 verifyPlacement(after: 0.15)  // o app teve tempo de aplicar (Electron é assíncrono)
             } else if !held {
@@ -795,8 +975,10 @@ final class WindowManager: NSObject {
                     if self?.layoutVersion == version { self?.returnGhosts() }
                 }
             }
-            if let id = deferredFocus { requestFocus(id) }
-            if verbose { report(duration: now - animationStart, ticks: ticks, maxTickGap: maxTickGap) }
+            if verbose {
+                report(duration: now - animationStart, ticks: ticks, maxTickGap: maxTickGap)
+                audit()
+            }
         }
     }
 
@@ -805,7 +987,7 @@ final class WindowManager: NSObject {
     /// resize de novo no meio do redesenho.
     private func returnGhosts() {
         guard !ghosted.isEmpty, link?.isPaused == true else { return }
-        finishGhosts(layout.frames(at: CACurrentMediaTime()))
+        finishGhosts(workspaces.frames(at: CACurrentMediaTime()))
         verifyPlacement(after: 0.15 + GhostOverlay.maxWait + GhostOverlay.hold + GhostOverlay.fade)
     }
 
@@ -818,15 +1000,69 @@ final class WindowManager: NSObject {
         }
     }
 
+    /// Largura mínima só vale com duas leituras iguais, a 2ª 0,6 s depois. Uma leitura só pegava app assíncrono
+    /// (Electron, Catalyst) ainda no tamanho velho, e o limite errado ficava salvo e mudava o tamanho da janela
+    /// sozinho (visto no uso: Arc 1704, WhatsApp 1643, Discord 1223 pt).
     private func verified(_ w: AppWorker, _ fixed: Int, _ minWidths: [(CGWindowID, Double)]) {
         if fixed > 0, verbose { log("\(w.name): \(fixed) correção(ões) de posição/tamanho") }
-        guard !minWidths.isEmpty else { return }
-        let now = CACurrentMediaTime()
+        let now = CACurrentMediaTime(), reported = Set(minWidths.map(\.0))
+        minCandidates = minCandidates.filter { id, _ in tracked[id].map { $0.pid != w.pid || reported.contains(id) } ?? false }
+        var learned = false, recheck = false
         for (id, width) in minWidths {
-            if verbose { log("\(w.name): janela \(id) não encolhe abaixo de \(Int(width)) pt; virou o limite da coluna") }
-            layout.setMinWidth(id, width, at: now)
+            guard let k = workspaces.index(of: id) else { continue }
+            if let first = minCandidates[id], abs(first - width) <= 2 {
+                if verbose { log("\(w.name): janela \(id) não encolhe abaixo de \(Int(width)) pt; virou o limite da coluna") }
+                workspaces[k].setMinWidth(id, width, at: now)
+                minCandidates[id] = nil
+                learned = true
+            } else {
+                minCandidates[id] = width
+                recheck = true
+            }
         }
-        animate()
+        if recheck {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard self?.link?.isPaused == true else { return }  // animando: a próxima conferência repete
+                w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
+            }
+        }
+        if learned { animate() }
+    }
+
+    /// O que a última `audit` registrou: a mesma janela no mesmo lugar não sai de novo no log.
+    private var audited: Set<String> = []
+
+    /// Com -v, depois de cada animação: confere pelo WindowServer (não fala com os apps) e registra janela de app
+    /// observado que está na tela fora do lugar ou fora da fita. É assim que se acha janela vazando de outro
+    /// workspace ou app que não entrou na fita (Steam). Estacionada conta pela fatia visível (ver `AppWorker.origin`).
+    private func audit() {
+        let version = layoutVersion
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4) {
+            let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.layoutVersion == version, self.link?.isPaused == true else { return }
+                let expected = Dictionary(uniqueKeysWithValues: self.workspaces.frames(at: CACurrentMediaTime()).map { ($0.window, $0.rect) })
+                let screen = self.layout.bounds
+                var found: Set<String> = []
+                for info in list {
+                    guard (info[kCGWindowLayer as String] as? Int) == 0, let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                          let name = self.workers[pid]?.name, let id = info[kCGWindowNumber as String] as? CGWindowID,
+                          !self.ghosted.contains(id),
+                          let d = info[kCGWindowBounds as String], let b = CGRect(dictionaryRepresentation: d as! CFDictionary) else { continue }
+                    let shown = b.intersection(screen)
+                    if let r = expected[id] {
+                        let parked = AppWorker.isParked(r, screen: screen)
+                        let wrong = parked ? abs(b.minX - (screen.maxX - 1)) > 2 || abs(b.minY - r.minY) > 2
+                            : abs(b.minX - r.minX) > 2 || abs(b.minY - r.minY) > 2 || abs(b.width - r.width) > 2 || abs(b.height - r.height) > 2
+                        if wrong { found.insert("\(name): janela \(id) fora do lugar: esperada \(parked ? "1 pt na borda direita" : "\(r)"), no WindowServer \(b)") }
+                    } else if shown.width > 40 && shown.height > 40 {
+                        found.insert("\(name): janela \(id) na tela fora da fita: \(b)")
+                    }
+                }
+                for m in found.subtracting(self.audited).sorted() { log("conferência: \(m)") }
+                self.audited = found
+            }
+        }
     }
 
     /// Com -v: quantos frames cada app conseguiu aplicar e quanto custou cada um.
@@ -853,6 +1089,8 @@ final class WindowManager: NSObject {
         let proportion: Double
         let saved: Double?
         let minWidth: Double
+        /// Nome do workspace. Ausente no estado de antes dos workspaces.
+        var workspace: String?
     }
 
     private static let statePath = FileManager.default.homeDirectoryForCurrentUser
@@ -864,28 +1102,38 @@ final class WindowManager: NSObject {
         return (try? JSONDecoder().decode([SavedColumn].self, from: data)) ?? []
     }
 
-    func saveState() {
+    private static let saveQueue = DispatchQueue(label: "niri.state", qos: .utility)
+
+    /// Grava fora da main (a gravação marcada 0,5 s depois de uma animação caía no meio da seguinte). `wait`:
+    /// ao sair, espera gravar.
+    func saveState(wait: Bool = true) {
         guard dev.pid == nil else { return }
-        let cols = layout.columns.map {
-            SavedColumn(window: $0.window, proportion: $0.proportion, saved: $0.savedProportion, minWidth: $0.minWidth)
+        let cols = (0..<workspaces.count).flatMap { k in
+            workspaces[k].columns.map {
+                SavedColumn(window: $0.window, proportion: $0.proportion, saved: $0.savedProportion, minWidth: $0.minWidth,
+                            workspace: workspaces.names[k])
+            }
         }
-        try? FileManager.default.createDirectory(at: Self.statePath.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(cols).write(to: Self.statePath, options: .atomic)
+        let write = {
+            try? FileManager.default.createDirectory(at: Self.statePath.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? JSONEncoder().encode(cols).write(to: Self.statePath, options: .atomic)
+        }
+        if wait { Self.saveQueue.sync(execute: write) } else { Self.saveQueue.async(execute: write) }
     }
 
     private func scheduleSave() {
         saveWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.saveState() }
+        let work = DispatchWorkItem { [weak self] in self?.saveState(wait: false) }
         saveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    /// Ao sair: tira as janelas da borda e devolve todas pra dentro da tela, em cascata.
+    /// Ao sair: tira as janelas da borda e devolve todas pra dentro da tela, em cascata (as de todos os workspaces).
     func shutdown() {
         saveState()
         link?.isPaused = true
         let area = layout.area
-        let frames = layout.frames(at: CACurrentMediaTime())
+        let frames = workspaces.frames(at: CACurrentMediaTime())
         var byApp: [pid_t: [(CGWindowID, CGRect)]] = [:]
         for (i, f) in frames.enumerated() {
             guard let t = tracked[f.window] else { continue }
