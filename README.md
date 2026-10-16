@@ -253,16 +253,18 @@ Medido:
 
 ### A fita (`tiling`)
 
-Ligar ou desligar a fita reinicia o niri-os com `exec` do mesmo executável: o mesmo pid, o mesmo log, os mesmos argumentos (`Settings.restart`). Montar e desmontar a fita com o app aberto teria que desfazer as filas por app, os observadores, o display link e as janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout. Reiniciando, são dois caminhos que já existiam: desligar é o `Ctrl+C` (guarda o estado e devolve as janelas pra tela em cascata, as de todos os workspaces) e ligar é a abertura (monta a fita do `state.json`: as janelas que continuam abertas voltam pro workspace, a ordem e a largura de antes). Antes do `exec`, todo descritor acima de 2 ganha `FD_CLOEXEC`: o pipe do processo do papel de parede fecha, ele vê o fim do stdin e sai, e o processo novo abre outro. O painel aberto é fechado e abre de novo no processo novo (`NIRI_OPEN_SETTINGS`), na mesma aba.
+Ligar ou desligar a fita reinicia o niri-os: abre um processo novo do mesmo executável, com os mesmos argumentos e o mesmo log, e o velho sai (`Settings.restart`). Montar e desmontar a fita com o app aberto teria que desfazer as filas por app, os observadores, o display link e as janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout. Reiniciando, são dois caminhos que já existiam: desligar é o `Ctrl+C` (guarda o estado e devolve as janelas pra tela em cascata, as de todos os workspaces) e ligar é a abertura (monta a fita do `state.json`: as janelas que continuam abertas voltam pro workspace, a ordem e a largura de antes). O processo novo só herda o stdout e o stderr: o pipe do papel de parede fecha quando o velho sai, ele vê o fim do stdin e sai, e o novo abre outro. O painel aberto é fechado e abre de novo no processo novo (`NIRI_OPEN_SETTINGS`), na mesma aba.
+
+A primeira versão usava `exec` (o mesmo pid). O ícone ia pra fora da barra de menu (a Acessibilidade dava (7, 1105), contra (1022, 4,5) antes) e não voltava, nem tirando o item da barra antes do `exec`, nem esperando 0,3 s depois de tirar. Com pid novo, o ícone ficou no lugar em 6 reinícios seguidos.
 
 Sem a fita, o niri-os não usa Acessibilidade, display link nem janela nossa: ficam o ícone, o tap de teclado (só com o atalho do histórico; os da fita passam pros apps), o histórico e o papel de parede. O `state.json` não é gravado, pra fita voltar como estava. O vídeo do papel de parede fica parado no quadro em que está: sem a fita, o niri-os não sabe quando a mesa está à mostra. `--workspace` e `onWorkspaceChange` não fazem nada.
 
 Medido na instância de teste (`--pid` com dois painéis e `NIRI_CONFIG`, que no teste também recarrega):
 
-- **Do pedido ao processo novo pronto:** 57 ms pra desligar (com a cascata) e 107 ms pra ligar (com a fita montada).
+- **Do pedido ao processo novo pronto:** 49 a 72 ms pra desligar (com a cascata) e 98 a 104 ms pra ligar (com a fita montada).
 - **Memória:** 11 MB com a fita, 9,8 MB sem. Sem nenhuma janela do niri-os na tela, contra 2 com a fita (o vidro do resize e a borda).
 - **Pelo painel:** clique no botão da fita (pela Acessibilidade), o processo reinicia e o painel abre de novo, com pid novo, na aba Recursos e com a borda cinza. Os painéis de teste vão pra cascata e voltam pra fita nos mesmos lugares.
-- **6 reinícios seguidos com o painel aberto:** 2 pipes e 31 descritores abertos em todos, um painel só.
+- **6 reinícios seguidos com o painel aberto:** 2 pipes abertos em todos, um painel só, o ícone no lugar.
 
 Não testado na instância de uso: desligar a fita empilha todas as janelas em cascata.
 

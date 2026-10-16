@@ -75,25 +75,28 @@ final class Settings: NSObject {
     /// `NIRI_OPEN_SETTINGS`: o processo novo abre o painel (ver `restart`).
     static let reopenKey = "NIRI_OPEN_SETTINGS"
 
-    /// Ligar ou desligar a fita reinicia o processo, com `exec` do mesmo executável (o mesmo pid, o mesmo log). Montar e
-    /// desmontar a fita com o app aberto teria que desfazer as filas por app, os observadores, o display link e as
-    /// janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout. Assim são dois caminhos que já
-    /// existem: desligar devolve as janelas pra tela (o mesmo do Ctrl+C) e guarda o estado; ligar monta a fita do
-    /// state.json, como ao abrir. O painel aberto fecha e abre de novo no processo novo.
+    /// Ligar ou desligar a fita reinicia o niri-os: um processo novo do mesmo executável, com os mesmos argumentos e o
+    /// mesmo log, e este sai. Montar e desmontar a fita com o app aberto teria que desfazer as filas por app, os
+    /// observadores, o display link e as janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout.
+    /// Assim são dois caminhos que já existem: desligar devolve as janelas pra tela (o mesmo do Ctrl+C) e guarda o
+    /// estado; ligar monta a fita do state.json, como ao abrir. O painel aberto fecha e abre de novo no processo novo.
+    /// Com `exec` (mesmo pid) o ícone ia pra fora da barra de menu e não voltava, nem tirando ele antes.
     private func restart() -> Never {
         log("fita \(wm.config.has(.tiling) ? "desligada" : "ligada"): reiniciando o niri-os")
-        if panel != nil { setenv(Self.reopenKey, "1", 1) }
+        let reopen = panel != nil
         panel?.terminate()
         wm.shutdown()  // sem a fita, não mexe em nada
-        // Os pipes dos processos filhos fecham com o exec: o do papel de parede vê o fim do stdin e sai, e o novo abre outro.
-        for fd in (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd"))?.compactMap(Int32.init) ?? [] where fd > 2 {
-            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        let p = Process()  // herda o stdout e o stderr (o log); os outros descritores ficam fechados no filho
+        p.executableURL = Bundle.main.executableURL
+        p.arguments = Array(CommandLine.arguments.dropFirst())
+        p.environment = ProcessInfo.processInfo.environment.merging(reopen ? [Self.reopenKey: "1"] : [:]) { $1 }
+        do {
+            try p.run()
+        } catch {
+            log("não consegui reiniciar (\(error)): abra o niri-os de novo")
+            exit(1)
         }
-        let path = Bundle.main.executablePath ?? CommandLine.arguments[0]
-        let argv = CommandLine.arguments.map { strdup($0) } + [nil]
-        execv(path, argv)
-        log("não consegui reiniciar (\(String(cString: strerror(errno)))): abra o niri-os de novo")
-        exit(1)
+        exit(0)  // o pipe do papel de parede fecha: ele vê o fim do stdin e sai, e o processo novo abre outro
     }
 
     static func openFile(reveal: Bool = false) {
