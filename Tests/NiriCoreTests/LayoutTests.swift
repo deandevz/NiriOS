@@ -140,6 +140,59 @@ private func settle(_ l: inout Layout) -> [WindowFrame] {
     #expect(before.dropFirst().map(\.rect) == after.map(\.rect))
 }
 
+/// Option+Shift+< >: a focada troca de lugar com a vizinha, com larguras diferentes. Nada pula no primeiro frame; em
+/// todo frame só as duas que trocam se cruzam (as outras continuam a `gap` exato e ninguém chega a menos de `gap` delas);
+/// no fim a ordem é a nova, com o foco na mesma janela. Na ponta, nada muda.
+@Test(arguments: [CenterMode.never, .always, .onOverflow])
+func moveColumnSwapsWithNeighborWithoutJumping(center: CenterMode) {
+    var config = LayoutConfig()
+    config.centerFocusedColumn = center
+    var l = Layout(area: area, bounds: bounds, config: config)
+    for (i, p) in [0.3, 0.5, 0.4, 2.0 / 3, 0.3].enumerated() { l.append(WindowID(i + 1), proportion: p) }
+    _ = l.focusNeighbor(2, at: 0)
+    _ = settle(&l)
+    for (delta, order) in [(1, [1, 2, 4, 3, 5]), (-1, [1, 2, 3, 4, 5]), (-1, [1, 3, 2, 4, 5]), (-1, [3, 1, 2, 4, 5])] {
+        let before = Dictionary(uniqueKeysWithValues: l.frames(at: 0).map { ($0.window, $0.rect) })
+        #expect(l.moveFocusedColumn(delta, at: 0) == true)
+        #expect(l.windows == order.map(WindowID.init))
+        #expect(l.focusedWindow == 3)
+        #expect(l.frames(at: 0).allSatisfy { before[$0.window] == $0.rect })
+        let pair: Set = [WindowID(3), l.windows[l.focusedIndex! - delta]]
+        var t = 0.0
+        while t < 1 {
+            let f = l.frames(at: t), shown = f.filter { !parked($0.rect) }
+            for (a, b) in zip(f, f.dropFirst()) where !pair.contains(a.window) && !pair.contains(b.window) && !parked(a.rect) && !parked(b.rect) {
+                #expect(b.rect.minX - a.rect.maxX == 12, "t=\(t): \(a.rect) e \(b.rect)")
+            }
+            for a in shown {
+                for b in shown where a.window < b.window && !(pair.contains(a.window) && pair.contains(b.window)) {
+                    #expect(a.rect.maxX + 12 <= b.rect.minX || b.rect.maxX + 12 <= a.rect.minX, "t=\(t): \(a.rect) e \(b.rect)")
+                }
+            }
+            t += 1.0 / 120
+        }
+        let f = settle(&l).filter { !parked($0.rect) }
+        for (a, b) in zip(f, f.dropFirst()) { #expect(b.rect.minX - a.rect.maxX == 12) }
+    }
+    #expect(l.moveFocusedColumn(-1, at: 0) == false)
+    #expect(l.windows == [3, 1, 2, 4, 5])
+}
+
+/// Outra troca no meio da animação (a tecla repetindo) também não pula.
+@Test func moveColumnMidAnimationDoesNotJump() {
+    var l = makeLayout(4, proportion: 0.3, center: .always)
+    _ = l.focusNeighbor(1, at: 0)
+    _ = settle(&l)
+    l.moveFocusedColumn(1, at: 0)
+    let mid = Dictionary(uniqueKeysWithValues: l.frames(at: 0.08).map { ($0.window, $0.rect) })
+    l.moveFocusedColumn(1, at: 0.08)
+    #expect(l.windows == [1, 3, 4, 2])
+    #expect(l.frames(at: 0.08).allSatisfy { mid[$0.window] == $0.rect })
+    let f = settle(&l).filter { !parked($0.rect) }
+    #expect(f.map(\.window) == [1, 3, 4, 2])
+    for (a, b) in zip(f, f.dropFirst()) { #expect(b.rect.minX - a.rect.maxX == 12) }
+}
+
 /// Em todo frame de resize, rolagem e tela cheia: janelas vizinhas visíveis ficam a exatamente
 /// `gap` uma da outra (nunca encostam, nunca se sobrepõem), e as estacionadas não invadem a área.
 @Test(arguments: [CenterMode.never, .always, .onOverflow])

@@ -74,8 +74,9 @@ if let pid = value("--pid").flatMap(Int32.init) {
     }
 }
 // Sem --pid, o script roda nas janelas de verdade, com foco: é o único jeito de medir a troca de foco.
-let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow": .grow,
-                               "shrink": .shrink, "full": .toggleFullWidth, "desktop": .toggleDesktop]
+let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow": .grow, "shrink": .shrink,
+                               "move-left": .moveColumnLeft, "move-right": .moveColumnRight,
+                               "full": .toggleFullWidth, "desktop": .toggleDesktop]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action? in
     if s.hasPrefix("ws:") { return .workspace(String(s.dropFirst(3))) }

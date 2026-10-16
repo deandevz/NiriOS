@@ -398,6 +398,8 @@ extension Action {
         case .shrink: "Diminuir largura"
         case .focusLeft: "Foco à esquerda"
         case .focusRight: "Foco à direita"
+        case .moveColumnLeft: "Mover coluna pra esquerda"
+        case .moveColumnRight: "Mover coluna pra direita"
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
         case .workspace: "Ir pro workspace"

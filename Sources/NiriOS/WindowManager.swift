@@ -149,6 +149,9 @@ final class WindowManager: NSObject {
         self.link = link
         _ = transition  // a janela da transição já fica pronta na tela, vazia
         _ = ghost
+        // A 1ª consulta custa ~29 ms na main (as seguintes ~10): aqui nada anima. Na 1ª volta do vidro, caía no meio da
+        // animação seguinte (um tick de 20 a 25 ms trocando colunas sem parar).
+        _ = canCapture
         border = FocusBorder()
         border?.style = (config.borderColor, config.borderWidth)
         border?.onShow = { [weak self] id in self?.ghost?.ring = id }
@@ -532,6 +535,14 @@ final class WindowManager: NSObject {
             }
             if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
             deferFocus(id)
+        case .moveColumnLeft, .moveColumnRight:
+            // Como no resize: o vidro anda no lugar da janela, com a borda, e a vizinha passa por baixo dele.
+            guard let id = layout.focusedWindow, layout.moveFocusedColumn(action == .moveColumnLeft ? -1 : 1, at: now) else {
+                if verbose { log("ação \(action): já está na ponta da fita") }
+                return
+            }
+            if verbose { log("ação \(action): janela \(id) agora é a coluna \(layout.focusedIndex! + 1) de \(layout.columns.count)") }
+            hideBehindGlass(id, at: now)
         case .grow, .shrink, .toggleFullWidth:
             if transition != nil, startGlobal(action, at: now) { return }
             if ghost != nil { resizeWithGhost(action, at: now) } else { resize(&layout, action, at: now) }
@@ -834,17 +845,22 @@ final class WindowManager: NSObject {
     /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
     private var ghosted: Set<CGWindowID> = []
 
-    /// O vidro entra no lugar da janela focada e ela espera fora da tela até a fita parar
-    /// (`finishGhosts`). Outra tecla no meio só muda o alvo da fita: o vidro segue, a janela não volta.
     private func resizeWithGhost(_ action: Action, at now: Double) {
         let id = layout.focusedWindow, before = finalFrame(id)
         resize(&layout, action, at: now)
-        guard let ghost, let id, let t = tracked[id], let to = finalFrame(id), to.size != before?.size,
-              let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
+        guard let id, let to = finalFrame(id), to.size != before?.size else { return }
+        hideBehindGlass(id, shrinkTo: to.size, at: now)
+    }
+
+    /// O vidro entra no lugar da janela e ela espera fora da tela até a fita parar (`finishGhosts`). Outra tecla no
+    /// meio só muda o alvo da fita: o vidro segue, a janela não volta. `shrinkTo`: o tamanho final, aplicado antes de
+    /// sair se ela encolhe (ver `AppWorker.park`). Sem o vidro (`resizeStyle` photos ou live), nada muda.
+    private func hideBehindGlass(_ id: CGWindowID, shrinkTo size: CGSize? = nil, at now: Double) {
+        guard let ghost, let t = tracked[id], let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
         ghost.show(id, of: t.pid, at: r, radius: border?.cornerRadius(of: id) ?? 16)
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
-        workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: to.width < r.width ? to.size : nil)
+        workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: size.flatMap { $0.width < r.width ? $0 : nil })
     }
 
     /// Onde a janela fica quando a fita parar.

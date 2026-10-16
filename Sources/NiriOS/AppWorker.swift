@@ -307,7 +307,11 @@ final class AppWorker {
 
     /// Devolve a janela ao lugar final. Da transição por fotos ela volta já no tamanho final (só posição);
     /// do resize fantasma, crescendo, cresce aqui, dentro do lugar final.
+    /// Volta pra fita aqui, na main, e não no fim do bloco na fila: um `park` de outra tecla logo depois (a fita parou
+    /// e a janela começou a voltar) era desfeito quando o bloco rodava depois dele, e a janela andava pela fita por
+    /// baixo do vidro, por cima da vizinha. Os frames que a fila aplicar antes do bloco já são o lugar final.
     func attach(_ id: CGWindowID, at r: CGRect, done: @escaping () -> Void) {
+        lock.lock(); detached.remove(id); lock.unlock()
         queue.async {
             if let el = self.elements[id] {
                 let c = self.current[id]
@@ -322,7 +326,6 @@ final class AppWorker {
                 self.current[id] = r
                 self.requested[id] = r
             }
-            self.lock.lock(); self.detached.remove(id); self.lock.unlock()
             DispatchQueue.main.async(execute: done)
         }
     }

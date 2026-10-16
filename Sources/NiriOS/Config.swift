@@ -71,11 +71,13 @@ struct Config {
     var warnings: [String] = []
 
     /// Códigos de tecla são posicionais: valem pra US, US Internacional e ABNT2.
-    /// Shift é aceito quando não tem atalho próprio, então Option+< e Option+> funcionam igual a Option+, e Option+.
+    /// Shift é aceito quando não tem atalho próprio (Option+Shift+= é o Option+=).
     /// Option+setas também: no terminal e no editor elas deixam de pular palavra.
+    /// Mover coluna é o foco com Shift. Shift+seta sozinho não dá: é selecionar texto em todo app.
     static let defaultShortcuts: [Action: [Shortcut]] = [
         .grow: ["option+=", "option+keypadplus"], .shrink: ["option+-", "option+keypadminus"],
         .focusLeft: ["option+,", "option+left"], .focusRight: ["option+.", "option+right"],
+        .moveColumnLeft: ["option+shift+,", "option+shift+left"], .moveColumnRight: ["option+shift+.", "option+shift+right"],
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"],
     ].mapValues { $0.map { Shortcut($0)! } }
 

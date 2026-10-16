@@ -4,21 +4,21 @@ import os
 
 /// O nome de cada ação fixa é a chave dela em "shortcuts" no config.json. As de workspace vêm de "workspaces".
 enum Action: Hashable {
-    case grow, shrink, focusLeft, focusRight, toggleFullWidth, toggleDesktop
+    case grow, shrink, focusLeft, focusRight, moveColumnLeft, moveColumnRight, toggleFullWidth, toggleDesktop
     /// Vai pro workspace com esse nome / manda a janela focada pra ele.
     case workspace(String), moveToWorkspace(String)
 
     /// As ações de "shortcuts", na ordem do painel.
-    static let allCases: [Action] = [.grow, .shrink, .focusLeft, .focusRight, .toggleFullWidth, .toggleDesktop]
+    static let allCases: [Action] = [.grow, .shrink, .focusLeft, .focusRight, .moveColumnLeft, .moveColumnRight, .toggleFullWidth, .toggleDesktop]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
         self = a
     }
 
-    /// Segurar a tecla repete resize e navegação. Tela cheia e mesa alternando sem parar não fazem sentido, e
+    /// Segurar a tecla repete resize, navegação e mover coluna. Tela cheia e mesa alternando sem parar não fazem sentido, e
     /// mandar pra outro workspace mandaria uma janela atrás da outra.
-    var repeats: Bool { [.grow, .shrink, .focusLeft, .focusRight].contains(self) }
+    var repeats: Bool { [.grow, .shrink, .focusLeft, .focusRight, .moveColumnLeft, .moveColumnRight].contains(self) }
 }
 
 /// Atalhos globais via CGEventTap.

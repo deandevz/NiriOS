@@ -187,6 +187,23 @@ public struct Layout {
         return columns[n].window
     }
 
+    /// Troca a coluna focada de lugar com a vizinha (`delta` -1 esquerda, 1 direita), como o `move-column-left/right`
+    /// do niri. As duas saem de onde estão na tela e deslizam pro lugar novo; o foco fica nela. Na ponta, nada muda.
+    @discardableResult
+    public mutating func moveFocusedColumn(_ delta: Int, at t: Double) -> Bool {
+        guard let f = focusedIndex, abs(delta) == 1, columns.indices.contains(f + delta) else { return false }
+        let n = f + delta, d = Double(delta)
+        // O espaço que cada uma ocupa agora (a largura como em `positions`): é o quanto a outra anda.
+        let moved = columns[f].width.value(at: t).rounded() + config.gap
+        let other = columns[n].width.value(at: t).rounded() + config.gap
+        columns.swapAt(f, n)
+        columns[n].offset.displace(by: -d * other, at: t)
+        columns[f].offset.displace(by: d * moved, at: t)
+        focusedIndex = n
+        retarget(at: t)
+        return true
+    }
+
     public mutating func resizeFocused(by delta: Double, at t: Double) {
         guard let f = focusedIndex else { return }
         var p = clamp(columns[f].proportion + delta)

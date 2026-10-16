@@ -13,13 +13,14 @@ Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: works
 | Atalho | Ação |
 |---|---|
 | `Option +` / `Option -` | largura da coluna focada: pula entre 1/3, 1/2, 2/3 e tela cheia (como no niri) |
-| `Option ,` / `Option .` (ou `<` `>`, ou `←` `→`) | foco pra coluna da esquerda / direita, a fita rola junto |
+| `Option ,` / `Option .` (ou `←` `→`) | foco pra coluna da esquerda / direita, a fita rola junto |
+| `Option Shift ,` / `Option Shift .` (ou `Option Shift ←` `→`) | troca a coluna focada de lugar com a vizinha da esquerda / direita |
 | `Option F` | coluna em largura total; de novo volta à largura anterior |
 | `Option D` | mostra a mesa: as janelas saem pela borda mais próxima, sem os ícones da mesa; de novo voltam |
 | `Option 1` a `Option 4` (e a letra de cada workspace) | vai pro workspace; a fita atual sai de lado e a dele entra |
 | `Option Shift 1` a `4` (idem) | manda a janela focada pra esse workspace |
 
-Segurar a tecla repete (só o resize e o foco). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe. Esses são os atalhos padrão; todos podem ser trocados (abaixo).
+Segurar a tecla repete (só o resize, o foco e mover coluna). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe. Esses são os atalhos padrão; todos podem ser trocados (abaixo).
 
 Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). O painel grava nele, e salvar o arquivo à mão também aplica na hora:
 
@@ -33,7 +34,7 @@ Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). 
   "onWorkspaceChange": "sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE" }
 ```
 
-`shortcuts`: ações `grow`, `shrink`, `focusLeft`, `focusRight`, `toggleFullWidth`, `toggleDesktop`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option <` = `Option ,`). O mesmo atalho em duas ações: vale a primeira, com aviso. `borderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `borderWidth` em pt (padrão 3; 0 tira a borda). É a borda da janela focada, que também contorna o vidro do resize (seção "Borda da janela focada"); os nomes de antes, `ghostBorderColor` e `ghostBorderWidth`, ainda valem. `wallpaper`: imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); sem a chave, o niri-os não mexe no papel de parede do macOS (e devolve o de antes, se o atual era dele). `wallpaperEffect`: `none` (padrão), `dither`, `halftone`, `scanlines` ou `ascii`, só pra imagem. Detalhes em "Mesa e papel de parede". `workspaces` e `onWorkspaceChange`: seção "Workspaces".
+`shortcuts`: ações `grow`, `shrink`, `focusLeft`, `focusRight`, `moveColumnLeft`, `moveColumnRight`, `toggleFullWidth`, `toggleDesktop`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option Shift =` = `Option =`). O mesmo atalho em duas ações: vale a primeira, com aviso. `borderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `borderWidth` em pt (padrão 3; 0 tira a borda). É a borda da janela focada, que também contorna o vidro do resize (seção "Borda da janela focada"); os nomes de antes, `ghostBorderColor` e `ghostBorderWidth`, ainda valem. `wallpaper`: imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); sem a chave, o niri-os não mexe no papel de parede do macOS (e devolve o de antes, se o atual era dele). `wallpaperEffect`: `none` (padrão), `dither`, `halftone`, `scanlines` ou `ascii`, só pra imagem. Detalhes em "Mesa e papel de parede". `workspaces` e `onWorkspaceChange`: seção "Workspaces".
 
 Ao recarregar: atalhos, borda, papel de parede e regras de app valem na hora; a lista de workspaces também (as janelas de um que saiu da lista vão pro atual); `gap`, margens, `defaultColumnWidth`, `stiffness` e `centerFocusedColumn` animam as janelas pro lugar novo (nada pula); `widthPresets` e `widthStep` valem na próxima tecla; `resizeStyle` e `axTimeout` só ao reiniciar. Arquivo com JSON inválido: usa os padrões, avisa no log e no painel, e o painel não grava por cima (perderia o que foi escrito à mão).
 
@@ -136,6 +137,21 @@ Primeira versão saía com tempo fixo (100 ms de espera + fade de 200 ms): o usu
 Ícone do app no meio do vidro (96 pt, `NSRunningApplication.icon` num `NSImageView` com margens elásticas: o AppKit recentraliza quando o vidro muda de tamanho, sem código por frame). Sai junto com o vidro no fade. A/B nos painéis de teste, 8 resizes, 2 rodadas cada: pico de 15 MB contra 14 MB sem ícone, CPU e maior intervalo entre frames iguais (~16 ms).
 
 Primeira medição (2026-10-15, painéis de teste, 5 resizes seguidos): maior intervalo entre frames de 8,4 a 16,9 ms, CPU ~2,5% durante a animação (as fotos: 27 a 40%), memória 10 MB com pico de 10 MB (as fotos: 13 MB parado e ~28 MB de pico). Começa a mexer na hora da tecla, sem esperar o app. Avaliação do usuário nos apps reais: "melhorou demais, esse é o caminho"; virou o padrão no lugar das fotos.
+
+## Mover coluna (2026-10-16)
+
+`Option Shift ,` / `Option Shift .` (ou `Option Shift ←` `→`): a coluna focada troca de lugar com a vizinha, como o `move-column-left/right` do niri. O foco continua nela; na ponta da fita, nada acontece. Segurar repete. Shift sozinho com a seta não dá: é selecionar texto em todo app. Antes, `Option <` (Shift + `,`) era o mesmo que `Option ,`; agora é mover.
+
+- **Anima como o resize fantasma:** o vidro, com a borda, entra no lugar da janela, que espera fora da tela; a vizinha é a janela real e passa por baixo do vidro. Fita parada e Option solto (ou seguro por 0,5 s sem tecla), a janela volta no lugar novo e o vidro some do mesmo jeito. Com `resizeStyle` `photos` ou `live`, as duas janelas reais deslizam.
+- **No `Layout`** (`moveFocusedColumn`): troca as duas colunas e dá a cada uma, como deslocamento animado, o espaço que a outra ocupa (o mesmo de abrir e fechar janela). Nada pula no primeiro frame e as duas deslizam até o lugar novo. Com `centerFocusedColumn: always`, a focada fica parada no meio e a vizinha atravessa por baixo dela; com a fita inteira na tela, as duas andam.
+- **Testes** `moveColumnSwapsWithNeighborWithoutJumping` (os 3 modos de centralizar, larguras diferentes: nada pula, em todo frame só as duas se cruzam e as outras continuam a `gap` exato, até a ponta) e `moveColumnMidAnimationDoesNotJump` (a tecla repetindo no meio). Sem o deslocamento, falham com 13 erros.
+- **Medido nos painéis de teste** (5 painéis, 14 ações, 2 rodadas): 16 trocas, maior intervalo entre ticks 8,4 a 12,9 ms, com um de 21,3 ms na 2ª animação de uma rodada (1 em ~50 animações; causa não achada, o caminho do vidro é o mesmo do resize); maior intervalo do app 14,5 e 21,3 ms; 0 frames com sobreposição; verificação final "tudo no lugar".
+
+**A janela voltava a andar por baixo do vidro (valia pro resize também).** Quando a fita para, a janela volta (`attach`), e ela só voltava a receber os frames da fita no fim do bloco dela na fila do app. Uma tecla logo depois escondia a janela de novo (`park`), e o bloco atrasado desfazia isso: a janela andava pela fita por baixo do vidro, por cima da vizinha que cruzava. Visto num teste com `grow` e troca 12 ms depois da volta: 18 frames com sobreposição e a borda andando. Agora ela volta pra fita na main, na hora do pedido, e a ordem é a das teclas. A/B com o app atrasando 40 ms o bloco de volta e uma tecla a cada 370 ms (18 trocas, 2 rodadas): sem a correção, 211 a 255 frames com sobreposição e a borda andando em 16 a 18 trocas; com, 0 e 0.
+
+**`CGPreflightScreenCaptureAccess` no começo.** A 1ª chamada custa 29 ms (as seguintes ~10). Era feita na 1ª volta do vidro, na main, e caía no meio da animação seguinte (um tick de 20 a 25 ms trocando sem parar). Agora é feita ao abrir o niri-os.
+
+Ainda não conferido no uso real: os apps de verdade (Discord e WhatsApp no 2), e segurar a tecla com eles.
 
 ## Borda da janela focada (2026-10-16)
 
@@ -299,7 +315,7 @@ swift build -c release
 
 `--pid` faz o niri-os cuidar só daquele app, numa faixa no pé da tela, sem atalhos e sem roubar foco. Com o niri-os de uso aberto, rode o de teste de uma cópia do executável (`cp .build/release/niri-os /tmp/niri-os-teste`): com dois processos do mesmo arquivo, a captura de janela do segundo (`SLSHWCaptureWindowList`, que passa pelo `replayd`) nunca volta (visto em 2026-10-16). O vidro do resize sai mesmo assim depois de 0,85 s, e as capturas param até reiniciar. Sem `--pid`, o `--script` roda nas janelas de verdade e troca o foco; no fim sai sem mexer nas janelas (como o `SIGUSR1`). O script começa da janela focada, então confira qual app está na frente antes. Funciona com o OmniWM aberto. No fim ele lê o frame real de cada janela e compara com o esperado (sai com código 2 se algo ficou fora do lugar). `./scripts/test.sh` roda os testes do layout. Um deles confere em todo frame de 6 animações que o espaço entre janelas é exatamente o `gap`.
 
-`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). No `--script`, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
+`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). No `--script`, `move-left` e `move-right` trocam a coluna focada de lugar, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
 
 ## Limitações conhecidas
 
