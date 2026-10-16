@@ -37,11 +37,13 @@ final class WindowManager: NSObject {
     private var lastVanish = 0.0
     /// Onde estava cada janela que saiu da fita sem fechar (tela cheia, minimizada, app escondido): o workspace,
     /// as vizinhas e a coluna (largura), pra ela voltar igual, e não como janela nova (à direita da focada, no
-    /// workspace da tela, com 50%). Some quando ela volta, fecha ou o app sai.
+    /// workspace da tela, com 50%). Empilhada, a janela de cima dela (ou a de baixo, se era a de cima), pra voltar
+    /// pra mesma coluna. Some quando ela volta, fecha ou o app sai.
     private struct Away {
         let pid: pid_t
         var workspace: String
         let left: CGWindowID?, right: CGWindowID?, column: Column
+        let stack: (sibling: CGWindowID, above: Bool)?
     }
     private var away: [CGWindowID: Away] = [:]
     /// Janelas que o WindowServer avisou que saíram da tela (evento 816; ver `windowEvent`). Fechada no X por app
@@ -52,8 +54,8 @@ final class WindowManager: NSObject {
     /// Aviso dela não leva de volta: visto no uso, 1,5 s depois de ir pro 4 vazio o King Bot e o WhatsApp
     /// avisavam foco de novo e a tela voltava sozinha. Pra voltar, o atalho.
     private var leftBehind: CGWindowID?
-    /// Largura mínima lida uma vez, esperando a 2ª leitura (ver `verified`).
-    private var minCandidates: [CGWindowID: Double] = [:]
+    /// Largura e altura mínimas lidas uma vez, esperando a 2ª leitura (ver `verified`). 0 = sem limite naquela direção.
+    private var minCandidates: [CGWindowID: CGSize] = [:]
     private var link: CADisplayLink?
     private var started = false
     private var initialScans: [pid_t: ScanResult] = [:]
@@ -230,10 +232,12 @@ final class WindowManager: NSObject {
         guard !gone.isEmpty else { return }
         let wasFocused = layout.focusedWindow
         let now = CACurrentMediaTime()
-        for id in gone {
-            if workspaces.index(of: id) == workspaces.active { lastVanish = now }
-            tracked[id] = nil
-            workspaces.remove(id, at: now)
+        withGlass(at: now) {
+            for id in gone {
+                if workspaces.index(of: id) == workspaces.active { lastVanish = now }
+                tracked[id] = nil
+                workspaces.remove(id, at: now)
+            }
         }
         if let f = layout.focusedWindow, f != wasFocused { deferFocus(f) }
         animate()
@@ -262,11 +266,16 @@ final class WindowManager: NSObject {
         // Reinício: as janelas que continuam abertas voltam na mesma ordem e largura.
         let byID = Dictionary(all.map { ($0.1.id, $0) }, uniquingKeysWith: { a, _ in a })
         var restored: Set<CGWindowID> = []
-        for c in (dev.pid == nil ? Self.loadState() : []) {
+        var previous: (index: Int, workspace: Int)?
+        for (i, c) in (dev.pid == nil ? Self.loadState() : []).enumerated() {
             guard let (pid, w) = byID[c.window] else { continue }
             tracked[w.id] = (pid, w.element)
             let k = c.workspace.flatMap(workspaces.index(named:)) ?? workspace(forApp: pid) ?? 0
-            workspaces[k].append(w.id, proportion: c.proportion, savedProportion: c.saved, minWidth: c.minWidth)
+            // Embaixo da anterior só se ela também voltou, no mesmo workspace: senão ia pra coluna de outra janela.
+            let stacked = c.stacked == true && previous.map { $0 == (i - 1, k) } == true
+            workspaces[k].append(w.id, proportion: c.proportion, savedProportion: c.saved, minWidth: c.minWidth,
+                                 minHeight: c.minHeight ?? 0, share: c.share ?? 1, stacked: stacked)
+            previous = (i, k)
             restored.insert(w.id)
         }
         for (pid, w) in all where !restored.contains(w.id) {
@@ -372,7 +381,7 @@ final class WindowManager: NSObject {
         let hidden = gone.filter { orderedOut.contains($0) && !Private.isOrderedIn($0) }
         let removed = gone.filter { listed.contains($0) || !Private.isOnAnySpace($0) }.union(hidden)
         orderedOut = orderedOut.filter { tracked[$0] != nil && !removed.contains($0) }
-        let wasFocused = layout.focusedWindow
+        let wasFocused = layout.focusedWindow, final = ghost != nil ? finalFrames() : [:]
         var changed = false
 
         away = away.filter { $0.value.pid != pid || listed.contains($0.key) || Private.isOnAnySpace($0.key) }  // as que fecharam de vez
@@ -381,13 +390,15 @@ final class WindowManager: NSObject {
         for id in removed {
             // Ainda na lista do app (tela cheia, minimizada, app escondido) ou escondida no X: guarda onde estava pra
             // volta, como a minimizada.
-            let k = workspaces.index(of: id), cols = k.map { workspaces[$0].windows } ?? [], i = cols.firstIndex(of: id)
+            let k = workspaces.index(of: id), cols = k.map { workspaces[$0].columns } ?? [], i = k.flatMap { workspaces[$0].index(of: id) }
             if k == workspaces.active { lastVanish = now }
             tracked[id] = nil
             let column = workspaces.remove(id, at: now)
             if listed.contains(id) || hidden.contains(id), let k, let i, let column {
-                away[id] = Away(pid: pid, workspace: workspaces.names[k], left: i > 0 ? cols[i - 1] : nil,
-                                right: i + 1 < cols.count ? cols[i + 1] : nil, column: column)
+                let mates = cols[i].windows, r = mates.firstIndex(of: id)!
+                away[id] = Away(pid: pid, workspace: workspaces.names[k], left: i > 0 ? cols[i - 1].windows.first : nil,
+                                right: i + 1 < cols.count ? cols[i + 1].windows.first : nil, column: column,
+                                stack: mates.count < 2 ? nil : r > 0 ? (mates[r - 1], false) : (mates[1], true))
             }
             workers[pid]?.forget(id)
             changed = true
@@ -403,13 +414,15 @@ final class WindowManager: NSObject {
             tracked[w.id] = (pid, w.element)
             // Como no niri: janela nova entra à direita da focada e ganha foco (se o app está na frente).
             // Voltando (de tela cheia, minimizada, app escondido), vai pro lugar de antes: o mesmo workspace,
-            // entre as mesmas vizinhas, se ainda estão lá. App com workspace no config abre lá; o resto, no da tela.
+            // entre as mesmas vizinhas (ou na mesma coluna, se estava empilhada), se ainda estão lá. App com workspace
+            // no config abre lá; o resto, no da tela.
             let back = away.removeValue(forKey: w.id)
             let k = back.flatMap { workspaces.index(named: $0.workspace) } ?? home ?? workspaces.active
             let focus = isFront || result.focused == w.id
             if let back {
+                let stacked = back.stack.map { workspaces[k].stack(back.column, with: $0.sibling, above: $0.above, focus: focus, at: now) } ?? false
                 let position = back.left.flatMap { workspaces[k].index(of: $0) }.map { $0 + 1 } ?? back.right.flatMap { workspaces[k].index(of: $0) }
-                workspaces[k].insert(back.column, position: position, focus: focus, at: now)
+                if !stacked { workspaces[k].insert(back.column, position: position, focus: focus, at: now) }
             } else {
                 workspaces[k].insert(w.id, focus: focus, at: now)
             }
@@ -417,6 +430,7 @@ final class WindowManager: NSObject {
             changed = true
         }
         guard changed else { return }
+        glassResized(since: final, at: now)  // a janela de cima ou de baixo da que fechou cresce
         if verbose { log("\(workers[pid]?.name ?? "?"): +\(added.count) -\(removed.count) janelas") }
         // App na frente com janela nova em outro workspace (a pessoa acabou de abrir ou de mostrar o app): a
         // tela vai junto, pro da janela focada dele se ela é uma das novas.
@@ -535,6 +549,13 @@ final class WindowManager: NSObject {
             }
             if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
             deferFocus(id)
+        case .focusUp, .focusDown:
+            guard let id = layout.focusInColumn(action == .focusUp ? -1 : 1) else {
+                if verbose { log("ação \(action): já está na ponta da coluna") }
+                return
+            }
+            if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
+            deferFocus(id)
         case .moveColumnLeft, .moveColumnRight:
             // Como no resize: o vidro anda no lugar da janela, com a borda, e a vizinha passa por baixo dele.
             guard let id = layout.focusedWindow, layout.moveFocusedColumn(action == .moveColumnLeft ? -1 : 1, at: now) else {
@@ -542,13 +563,27 @@ final class WindowManager: NSObject {
                 return
             }
             if verbose { log("ação \(action): janela \(id) agora é a coluna \(layout.focusedIndex! + 1) de \(layout.columns.count)") }
-            hideBehindGlass(id, at: now)
+            let mates = layout.columns[layout.focusedIndex!].windows  // empilhadas, todas vão juntas
+            for w in mates.filter({ $0 != id }) + [id] { hideBehindGlass(w, at: now) }
+        case .consumeOrExpelLeft, .consumeOrExpelRight:
+            // A focada muda de coluna e as da coluna mudam de altura: todas vão pro vidro e voltam prontas no fim.
+            guard withGlass(at: now, { layout.consumeOrExpel(action == .consumeOrExpelLeft ? -1 : 1, at: now) }) else {
+                if verbose { log("ação \(action): nada mudou (sozinha na ponta da fita, ou as alturas mínimas dos apps não cabem juntas)") }
+                return
+            }
+            if verbose { log("ação \(action): colunas \(layout.columns.map { $0.windows.count })") }
+        case .growHeight, .shrinkHeight:
+            let dir = action == .growHeight ? 1 : -1
+            guard withGlass(at: now, { layout.resizeFocusedHeight(toPresetIn: config.heightPresets, direction: dir, at: now) }) else {
+                if verbose { log("ação \(action): sozinha na coluna, ou já no limite") }
+                return
+            }
         case .grow, .shrink, .toggleFullWidth:
             if transition != nil, startGlobal(action, at: now) { return }
-            if ghost != nil { resizeWithGhost(action, at: now) } else { resize(&layout, action, at: now) }
+            withGlass(at: now) { resize(&layout, action, at: now) }
         case .moveToWorkspace(let name):
             guard let k = workspaces.index(named: name), k != workspaces.active, let id = layout.focusedWindow else { return }
-            workspaces.move(id, to: k, at: now)
+            withGlass(at: now) { workspaces.move(id, to: k, at: now) }  // empilhada, as da coluna crescem
             if verbose { log("ação \(action): janela \(id) foi pro workspace \(name)") }
             if let f = layout.focusedWindow { deferFocus(f) }
         case .toggleDesktop, .workspace: break
@@ -845,29 +880,47 @@ final class WindowManager: NSObject {
     /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
     private var ghosted: Set<CGWindowID> = []
 
-    private func resizeWithGhost(_ action: Action, at now: Double) {
-        let id = layout.focusedWindow, before = finalFrame(id)
-        resize(&layout, action, at: now)
-        guard let id, let to = finalFrame(id), to.size != before?.size else { return }
-        hideBehindGlass(id, shrinkTo: to.size, at: now)
+    /// Roda `change` (uma ação na fita) com o vidro nas janelas que mudam de tamanho (ver `glassResized`).
+    @discardableResult
+    private func withGlass<T>(at now: Double, _ change: () -> T) -> T {
+        let before = ghost != nil ? finalFrames() : [:]
+        let result = change()
+        glassResized(since: before, at: now)
+        return result
+    }
+
+    /// Toda janela da tela que vai terminar com outro tamanho espera fora da tela, atrás do vidro, e volta pronta no fim
+    /// (`hideBehindGlass`); as outras só andam, como no `< >`. A focada por último, pro vidro dela ficar por cima: entrando
+    /// na coluna vizinha, ela passa por cima das de lá. `before`: os frames finais de antes da mudança.
+    private func glassResized(since before: [CGWindowID: CGRect], at now: Double) {
+        guard ghost != nil, !before.isEmpty else { return }
+        let after = finalFrames(), screen = layout.bounds, f = layout.focusedWindow
+        let resized = layout.windows.filter { id in
+            guard let a = after[id], let b = before[id] else { return false }
+            return a.size != b.size && !AppWorker.isParked(a, screen: screen)
+        }
+        for id in resized.filter({ $0 != f }) + resized.filter({ $0 == f }) { hideBehindGlass(id, shrinkTo: after[id]!.size, at: now) }
     }
 
     /// O vidro entra no lugar da janela e ela espera fora da tela até a fita parar (`finishGhosts`). Outra tecla no
     /// meio só muda o alvo da fita: o vidro segue, a janela não volta. `shrinkTo`: o tamanho final, aplicado antes de
-    /// sair se ela encolhe (ver `AppWorker.park`). Sem o vidro (`resizeStyle` photos ou live), nada muda.
+    /// sair no que ela encolhe (ver `AppWorker.park`). Sem o vidro (`resizeStyle` photos ou live), nada muda.
     private func hideBehindGlass(_ id: CGWindowID, shrinkTo size: CGSize? = nil, at now: Double) {
         guard let ghost, let t = tracked[id], let r = layout.frames(at: now).first(where: { $0.window == id })?.rect else { return }
         ghost.show(id, of: t.pid, at: r, radius: border?.cornerRadius(of: id) ?? 16)
         guard ghosted.insert(id).inserted else { return }
         CATransaction.flush()  // o vidro entra antes de a janela sair
-        workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: size.flatMap { $0.width < r.width ? $0 : nil })
+        let shrink = size.flatMap { s in
+            s.width < r.width || s.height < r.height ? CGSize(width: min(s.width, r.width), height: min(s.height, r.height)) : nil
+        }
+        workers[t.pid]?.park(id, screen: layout.bounds, y: r.minY, shrinkTo: shrink)
     }
 
-    /// Onde a janela fica quando a fita parar.
-    private func finalFrame(_ id: CGWindowID?) -> CGRect? {
+    /// Onde cada janela da tela fica quando a fita parar.
+    private func finalFrames() -> [CGWindowID: CGRect] {
         var l = layout
         l.snapToTargets()
-        return l.frames(at: 0).first { $0.window == id }?.rect
+        return Dictionary(uniqueKeysWithValues: l.frames(at: 0).map { ($0.window, $0.rect) })
     }
 
     /// Fita parada: as janelas escondidas voltam no lugar e tamanho finais, por baixo do vidro, e o vidro
@@ -1012,6 +1065,9 @@ final class WindowManager: NSObject {
         scheduleSave()
         // O vídeo do papel de parede toca só com a mesa à mostra; com janela na tela ele para.
         if started { wallpaper?.desktopShown(layout.showsDesktop || layout.windows.isEmpty) }
+        // Option ↑ ↓ só é nosso numa coluna com mais de uma janela; fora dela vai pro app.
+        let stacked = layout.focusedIndex.map { layout.columns[$0].tiles.count > 1 } ?? false
+        if hotkeys.idle.isEmpty != stacked { hotkeys.idle = stacked ? [] : [.focusUp, .focusDown] }
         updateBorder()
         guard let link else { return }
         if link.isPaused {
@@ -1088,35 +1144,42 @@ final class WindowManager: NSObject {
             guard let self, self.link?.isPaused == true else { return }
             if self.border?.refresh() == true, self.verbose { log("borda: fora do lugar na conferência (aviso do WindowServer perdido?)") }
             for w in self.workers.values {
-                w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
+                w.verifyPlacement { [weak self] fixed, minSizes in self?.verified(w, fixed, minSizes) }
             }
         }
     }
 
-    /// Largura mínima só vale com duas leituras iguais, a 2ª 0,6 s depois. Uma leitura só pegava app assíncrono
-    /// (Electron, Catalyst) ainda no tamanho velho, e o limite errado ficava salvo e mudava o tamanho da janela
-    /// sozinho (visto no uso: Arc 1704, WhatsApp 1643, Discord 1223 pt).
-    private func verified(_ w: AppWorker, _ fixed: Int, _ minWidths: [(CGWindowID, Double)]) {
+    /// Largura e altura mínimas só valem com duas leituras iguais, a 2ª 0,6 s depois. Uma leitura só pegava app
+    /// assíncrono (Electron, Catalyst) ainda no tamanho velho, e o limite errado ficava salvo e mudava o tamanho da
+    /// janela sozinho (visto no uso: Arc 1704, WhatsApp 1643, Discord 1223 pt).
+    private func verified(_ w: AppWorker, _ fixed: Int, _ minSizes: [(CGWindowID, CGSize)]) {
         if fixed > 0, verbose { log("\(w.name): \(fixed) correção(ões) de posição/tamanho") }
-        let now = CACurrentMediaTime(), reported = Set(minWidths.map(\.0))
+        let now = CACurrentMediaTime(), reported = Set(minSizes.map(\.0))
         minCandidates = minCandidates.filter { id, _ in tracked[id].map { $0.pid != w.pid || reported.contains(id) } ?? false }
         var learned = false, recheck = false
-        for (id, width) in minWidths {
+        for (id, size) in minSizes {
             guard let k = workspaces.index(of: id) else { continue }
-            if let first = minCandidates[id], abs(first - width) <= 2 {
-                if verbose { log("\(w.name): janela \(id) não encolhe abaixo de \(Int(width)) pt; virou o limite da coluna") }
-                workspaces[k].setMinWidth(id, width, at: now)
+            if let first = minCandidates[id], abs(first.width - size.width) <= 2, abs(first.height - size.height) <= 2 {
+                // Só anima (e confere de novo) se o limite mudou: senão, com um limite que o layout não consegue dar, a
+                // conferência mandava o mesmo tamanho a cada 0,4 s, sem parar (visto no uso em 2026-10-16).
+                if size.width > 0, workspaces[k].setMinWidth(id, size.width, at: now) {
+                    if verbose { log("\(w.name): janela \(id) não encolhe abaixo de \(Int(size.width)) pt de largura; virou o limite da coluna") }
+                    learned = true
+                }
+                if size.height > 0, workspaces[k].setMinHeight(id, size.height, at: now) {
+                    if verbose { log("\(w.name): janela \(id) não encolhe abaixo de \(Int(size.height)) pt de altura; virou o limite dela na coluna") }
+                    learned = true
+                }
                 minCandidates[id] = nil
-                learned = true
             } else {
-                minCandidates[id] = width
+                minCandidates[id] = size
                 recheck = true
             }
         }
         if recheck {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard self?.link?.isPaused == true else { return }  // animando: a próxima conferência repete
-                w.verifyPlacement { [weak self] fixed, minWidths in self?.verified(w, fixed, minWidths) }
+                w.verifyPlacement { [weak self] fixed, minSizes in self?.verified(w, fixed, minSizes) }
             }
         }
         if learned { animate() }
@@ -1180,6 +1243,7 @@ final class WindowManager: NSObject {
 
     // MARK: - Estado salvo
 
+    /// Uma por janela, na ordem da fita. As de uma coluna empilhada vêm em seguida, de cima pra baixo, com a largura da coluna.
     private struct SavedColumn: Codable {
         let window: CGWindowID
         let proportion: Double
@@ -1187,6 +1251,8 @@ final class WindowManager: NSObject {
         let minWidth: Double
         /// Nome do workspace. Ausente no estado de antes dos workspaces.
         var workspace: String?
+        /// Na mesma coluna da anterior (embaixo dela), a parte dela da altura e a altura mínima.
+        var stacked: Bool?, share: Double?, minHeight: Double?
     }
 
     private static let statePath = FileManager.default.homeDirectoryForCurrentUser
@@ -1205,9 +1271,12 @@ final class WindowManager: NSObject {
     func saveState(wait: Bool = true) {
         guard dev.pid == nil else { return }
         let cols = (0..<workspaces.count).flatMap { k in
-            workspaces[k].columns.map {
-                SavedColumn(window: $0.window, proportion: $0.proportion, saved: $0.savedProportion, minWidth: $0.minWidth,
-                            workspace: workspaces.names[k])
+            workspaces[k].columns.flatMap { c in
+                c.tiles.enumerated().map { r, t in
+                    SavedColumn(window: t.window, proportion: c.proportion, saved: c.savedProportion, minWidth: t.minWidth,
+                                workspace: workspaces.names[k], stacked: r > 0 ? true : nil, share: c.tiles.count > 1 ? t.share : nil,
+                                minHeight: t.minHeight > 0 ? t.minHeight : nil)
+                }
             }
         }
         let write = {

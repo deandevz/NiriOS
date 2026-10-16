@@ -4,21 +4,25 @@ import os
 
 /// O nome de cada ação fixa é a chave dela em "shortcuts" no config.json. As de workspace vêm de "workspaces".
 enum Action: Hashable {
-    case grow, shrink, focusLeft, focusRight, moveColumnLeft, moveColumnRight, toggleFullWidth, toggleDesktop
+    case grow, shrink, growHeight, shrinkHeight, focusLeft, focusRight, focusUp, focusDown, moveColumnLeft, moveColumnRight
+    case consumeOrExpelLeft, consumeOrExpelRight, toggleFullWidth, toggleDesktop
     /// Vai pro workspace com esse nome / manda a janela focada pra ele.
     case workspace(String), moveToWorkspace(String)
 
     /// As ações de "shortcuts", na ordem do painel.
-    static let allCases: [Action] = [.grow, .shrink, .focusLeft, .focusRight, .moveColumnLeft, .moveColumnRight, .toggleFullWidth, .toggleDesktop]
+    static let allCases: [Action] = [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown,
+                                     .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
         self = a
     }
 
-    /// Segurar a tecla repete resize, navegação e mover coluna. Tela cheia e mesa alternando sem parar não fazem sentido, e
-    /// mandar pra outro workspace mandaria uma janela atrás da outra.
-    var repeats: Bool { [.grow, .shrink, .focusLeft, .focusRight, .moveColumnLeft, .moveColumnRight].contains(self) }
+    /// Segurar a tecla repete resize, navegação e mover coluna. Tela cheia e mesa alternando sem parar não fazem sentido,
+    /// juntar e separar ficaria indo e voltando, e mandar pra outro workspace mandaria uma janela atrás da outra.
+    var repeats: Bool {
+        [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown, .moveColumnLeft, .moveColumnRight].contains(self)
+    }
 }
 
 /// Atalhos globais via CGEventTap.
@@ -34,6 +38,8 @@ final class HotkeyTap {
         /// Os modificadores de cada atalho, sem o Shift (ver `onModifiers`).
         var holds: Set<UInt64> = []
         var paused = false
+        /// Ações que agora não fariam nada: a tecla passa pro app (ver `idle`).
+        var idle: Set<Action> = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -63,6 +69,13 @@ final class HotkeyTap {
     var paused: Bool {
         get { state.withLock { $0.paused } }
         set { state.withLock { $0.paused = newValue } }
+    }
+
+    /// O atalho dessas ações vai pro app da frente em vez de ser engolido: Option ↑ ↓ fora de uma coluna com mais de uma
+    /// janela continua subindo e descendo parágrafo no editor.
+    var idle: Set<Action> {
+        get { state.withLock { $0.idle } }
+        set { state.withLock { $0.idle = newValue } }
     }
 
     /// Os modificadores de algum atalho estão apertados agora, segundo o estado do teclado.
@@ -109,7 +122,7 @@ final class HotkeyTap {
             }
             return Unmanaged.passUnretained(event)
         }
-        let (bindings, holds, paused) = state.withLock { ($0.bindings, $0.holds, $0.paused) }
+        let (bindings, holds, paused, idle) = state.withLock { ($0.bindings, $0.holds, $0.paused, $0.idle) }
         let mods = event.flags.intersection(Shortcut.modifierMask)
         if type == .flagsChanged {
             let down = holds.contains(mods.subtracting(.maskShift).rawValue)
@@ -128,7 +141,7 @@ final class HotkeyTap {
         if verbose && type == .keyDown && holds.contains(mods.subtracting(.maskShift).rawValue) {
             log("tecla: \(Shortcut(key: keycode, mods: mods)) (código \(keycode)) -> \(action.map { "\($0)" } ?? "sem atalho")")
         }
-        guard let action else { return Unmanaged.passUnretained(event) }
+        guard let action, !idle.contains(action) else { return Unmanaged.passUnretained(event) }
 
         if type == .keyDown {
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0

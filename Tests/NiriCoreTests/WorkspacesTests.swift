@@ -225,3 +225,17 @@ private func checkPartlyVisibleColumnSlides(_ w: inout Workspaces, from k0: Int,
     w.switchTo(0, at: 0)
     #expect(!parked(rect(run(&w).last!, 1)))
 }
+
+/// Mandar uma empilhada pra outro workspace: só ela vai, numa coluna só dela com a largura da coluna (as duas de 1/2
+/// juntas: a tela toda); a de cima fica e cresce até o pé.
+@Test func movingAStackedWindowLeavesTheRestOfTheColumn() {
+    var w = makeWorkspaces([3, 0])
+    _ = w[0].focusNeighbor(1, at: 0)
+    w[0].consumeOrExpel(-1, at: 0)
+    _ = run(&w)
+    w.move(2, to: 1, at: 0)
+    #expect(w[0].columns.map(\.windows) == [[1], [3]] && w[1].columns.map(\.windows) == [[2]])
+    #expect(w[1].columns[0].proportion == 1)
+    let end = run(&w).last!
+    #expect(rect(end, 1).minY == area.minY && rect(end, 1).height == area.height)
+}

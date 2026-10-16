@@ -316,8 +316,8 @@ final class AppWorker {
             if let el = self.elements[id] {
                 let c = self.current[id]
                 let resized = c.map { abs($0.width - r.width) > 1 || abs($0.height - r.height) > 1 } ?? false
-                // Encolhendo: tamanho antes da posição, senão ela invade a vizinha por um instante.
-                if resized, let c, r.width < c.width { _ = AX.setSize(el, r.size) }
+                // Encolhendo: tamanho antes da posição, senão ela invade a vizinha (do lado ou de baixo) por um instante.
+                if resized, let c, r.width < c.width || r.height < c.height { _ = AX.setSize(el, r.size) }
                 _ = AX.setPosition(el, r.origin)
                 if resized {
                     _ = AX.setSize(el, r.size)
@@ -340,24 +340,25 @@ final class AppWorker {
 
     /// Depois que a animação assenta (fora do caminho crítico): lê o frame real de cada janela.
     /// - Devolve pro lugar a que o usuário arrastou ou que o app moveu sozinho.
-    /// - Janela inteira na tela e mais larga que o pedido = o app recusou encolher. Esse é o
-    ///   limite dela (`minWidths`), e o layout passa a respeitar.
+    /// - Janela inteira na tela e mais larga ou mais alta que o pedido = o app recusou encolher. Esse é o
+    ///   limite dela (`minSizes`, 0 na direção em que ela obedeceu), e o layout passa a respeitar.
     /// Lido depois de assentar, não durante: Electron aplica o tamanho de forma assíncrona,
     /// e uma leitura logo após o set mostraria o tamanho velho como se fosse recusa.
-    func verifyPlacement(completion: @escaping (_ fixed: Int, _ minWidths: [(CGWindowID, Double)]) -> Void) {
+    func verifyPlacement(completion: @escaping (_ fixed: Int, _ minSizes: [(CGWindowID, CGSize)]) -> Void) {
         queue.async {
             self.lock.lock()
             let screen = self.clip
             let detached = self.detached
             self.lock.unlock()
             var fixed = 0
-            var minWidths: [(CGWindowID, Double)] = []
+            var minSizes: [(CGWindowID, CGSize)] = []
             for (id, r) in self.requested where !detached.contains(id) {
                 guard let el = self.elements[id],
                       let p = AX.point(AX.copy(el, kAXPositionAttribute)),
                       let s = AX.size(AX.copy(el, kAXSizeAttribute)) else { continue }
                 let onScreen = r.minX >= screen.minX && r.maxX <= screen.maxX
-                if onScreen && s.width > r.width + 1 { minWidths.append((id, s.width)) }
+                let wider = s.width > r.width + 1, taller = s.height > r.height + 1
+                if onScreen && (wider || taller) { minSizes.append((id, CGSize(width: wider ? s.width : 0, height: taller ? s.height : 0))) }
                 let origin = Self.origin(for: r, screen: screen)
                 var size = s
                 if onScreen && (s.width < r.width - 1 || abs(s.height - r.height) > 1) {
@@ -371,7 +372,7 @@ final class AppWorker {
                 }
                 self.current[id] = CGRect(origin: origin, size: size)
             }
-            DispatchQueue.main.async { completion(fixed, minWidths) }
+            DispatchQueue.main.async { completion(fixed, minSizes) }
         }
     }
 
@@ -416,7 +417,7 @@ final class AppWorker {
             var errs: [AXError] = []
             // Encolhendo: tamanho antes da posição. Ao contrário, o estado intermediário
             // (posição nova, tamanho velho) invade a vizinha por um instante.
-            if resized && size.width < real.width {
+            if resized && (size.width < real.width || size.height < real.height) {
                 errs.append(AX.setSize(el, size))
                 if moved { errs.append(AX.setPosition(el, origin)) }
             } else {

@@ -42,6 +42,8 @@ struct Config {
     /// Larguras do Option+/- (como no niri). Lista vazia = passo de `widthStep`. Passos maiores são
     /// menos transições, e cada uma é onde um app pode mostrar defeito.
     var widthPresets: [Double] = [1.0 / 3, 0.5, 2.0 / 3, 1]
+    /// Alturas do Option+Cmd+/- numa coluna com mais de uma janela, como fração da altura da coluna.
+    var heightPresets: [Double] = [1.0 / 3, 0.5, 2.0 / 3]
     /// Como o Option+/- anima. "ghost": vidro fosco no lugar da janela, que volta pronta no fim (ver
     /// GhostOverlay). "photos": fotos das janelas (ver TransitionOverlay; precisa de Gravação de Tela).
     /// "live": as janelas reais, frame a frame.
@@ -74,10 +76,14 @@ struct Config {
     /// Shift é aceito quando não tem atalho próprio (Option+Shift+= é o Option+=).
     /// Option+setas também: no terminal e no editor elas deixam de pular palavra.
     /// Mover coluna é o foco com Shift. Shift+seta sozinho não dá: é selecionar texto em todo app.
+    /// Empilhar janelas é com Cmd: só Cmd+= e Cmd+- seria o zoom de todo app, e Option+Cmd+← → troca de aba no navegador.
     static let defaultShortcuts: [Action: [Shortcut]] = [
         .grow: ["option+=", "option+keypadplus"], .shrink: ["option+-", "option+keypadminus"],
+        .growHeight: ["option+cmd+=", "option+cmd+keypadplus"], .shrinkHeight: ["option+cmd+-", "option+cmd+keypadminus"],
         .focusLeft: ["option+,", "option+left"], .focusRight: ["option+.", "option+right"],
+        .focusUp: ["option+up"], .focusDown: ["option+down"],
         .moveColumnLeft: ["option+shift+,", "option+shift+left"], .moveColumnRight: ["option+shift+.", "option+shift+right"],
+        .consumeOrExpelLeft: ["option+cmd+,"], .consumeOrExpelRight: ["option+cmd+."],
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
@@ -116,6 +122,10 @@ struct Config {
         if let v = num("defaultColumnWidth") { c.defaultColumnWidth = v }
         if let v = num("widthStep") { c.widthStep = v }
         if let v = obj["widthPresets"] as? [NSNumber] { c.widthPresets = v.map(\.doubleValue) }
+        if let v = obj["heightPresets"] as? [NSNumber] {
+            let p = v.map(\.doubleValue).filter { $0 > 0 && $0 < 1 }
+            if p.isEmpty { warn("heightPresets precisa de frações entre 0 e 1; usando 1/3, 1/2 e 2/3") } else { c.heightPresets = p }
+        }
         if let s = obj["resizeStyle"] as? String {
             if let m = ResizeStyle(rawValue: s) { c.resizeStyle = m } else { warn("resizeStyle '\(s)' inválido") }
         }
@@ -176,7 +186,7 @@ struct Config {
             warn("wallpaperEffect vale só pra imagem; o vídeo toca sem efeito")
             c.wallpaperEffect = .none
         }
-        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "resizeStyle", "stiffness", "axTimeout",
+        let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "heightPresets", "resizeStyle", "stiffness", "axTimeout",
                           "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         if data != nil { log("config carregada de \(path.path)") }

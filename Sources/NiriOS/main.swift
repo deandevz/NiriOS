@@ -10,7 +10,11 @@ niri-os: tiling em fita horizontal (estilo niri) pro macOS
   niri-os --workspace <nome>   pede pro niri-os rodando ir pra esse workspace (ex.: clique na SketchyBar)
 
 Atalhos: Option + / Option -   largura da coluna focada
-         Option , / Option .   foco pra coluna da esquerda / direita (também Option < > e Option ← →)
+         Option , / Option .   foco pra coluna da esquerda / direita (também Option ← →)
+         Option Shift , / .   troca a coluna focada de lugar com a vizinha
+         Option Cmd , / .     empilha a focada na coluna vizinha; empilhada, separa pra uma coluna só dela
+         Option Cmd + / -     altura da focada numa coluna empilhada
+         Option ↑ / ↓         foco na janela de cima / de baixo da coluna
          Option F             coluna em largura total (de novo: volta)
          Option D             mostra a mesa: as janelas saem pelas bordas (de novo: voltam)
          Option 1 a 4         vai pro workspace; com Shift, manda a janela focada pra ele
@@ -76,6 +80,8 @@ if let pid = value("--pid").flatMap(Int32.init) {
 // Sem --pid, o script roda nas janelas de verdade, com foco: é o único jeito de medir a troca de foco.
 let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow": .grow, "shrink": .shrink,
                                "move-left": .moveColumnLeft, "move-right": .moveColumnRight,
+                               "stack-left": .consumeOrExpelLeft, "stack-right": .consumeOrExpelRight,
+                               "taller": .growHeight, "shorter": .shrinkHeight, "up": .focusUp, "down": .focusDown,
                                "full": .toggleFullWidth, "desktop": .toggleDesktop]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action? in

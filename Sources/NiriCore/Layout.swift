@@ -29,18 +29,52 @@ public struct LayoutConfig: Equatable {
     public init() {}
 }
 
-public struct Column {
+/// Uma janela da coluna. As de uma coluna ficam uma embaixo da outra, com `gap` entre elas.
+public struct Tile {
     public let window: WindowID
+    /// Parte da altura útil da coluna (a altura menos os gaps), relativa às outras da coluna.
+    public internal(set) var share = 1.0
+    /// Menor largura e altura que o app aceita (pt), descobertas quando ele recusa encolher. 0 = sem limite conhecido.
+    public internal(set) var minWidth = 0.0
+    public internal(set) var minHeight = 0.0
+    var height: Spring
+    /// Deslocamento animado de onde a janela estava quando mudou de coluna ou de lugar na coluna (outra entrou ou saiu):
+    /// ela continua no mesmo lugar e tamanho na tela e anda até o novo, como a coluna com o `offset`.
+    var dx: Spring, dy: Spring, dw: Spring
+
+    func isNear(at t: Double, within d: Double) -> Bool {
+        height.isNear(at: t, within: d) && dx.isNear(at: t, within: d) && dy.isNear(at: t, within: d) && dw.isNear(at: t, within: d)
+    }
+
+    func isSettled(at t: Double) -> Bool {
+        height.isSettled(at: t) && dx.isSettled(at: t) && dy.isSettled(at: t) && dw.isSettled(at: t)
+    }
+
+    mutating func snap() {
+        height.snap()
+        dx.snap()
+        dy.snap()
+        dw.snap()
+    }
+}
+
+public struct Column {
+    /// De cima pra baixo. Quase sempre uma só.
+    public internal(set) var tiles: [Tile]
+    /// A janela focada da coluna: a que ganha o foco quando a coluna é focada.
+    public internal(set) var active = 0
     /// Largura alvo como fração da área útil (0.1 a 1.0).
     public internal(set) var proportion: Double
     /// Largura antes do Option+F, pra voltar no segundo toque.
     public internal(set) var savedProportion: Double?
-    /// Menor largura que o app aceita (pt), descoberta quando ele recusa encolher. 0 = sem limite conhecido.
-    public internal(set) var minWidth: Double = 0
     var width: Spring
     /// Deslocamento extra animado. Abrir ou fechar janela muda a posição das vizinhas no modelo
     /// na hora; esse deslocamento faz elas deslizarem até lá em vez de pular.
     var offset: Spring
+
+    public var windows: [WindowID] { tiles.map(\.window) }
+    /// Menor largura que os apps da coluna aceitam: a coluna não fica mais estreita que a janela que mais pede.
+    public var minWidth: Double { tiles.map(\.minWidth).max() ?? 0 }
 }
 
 public struct WindowFrame: Equatable {
@@ -48,7 +82,7 @@ public struct WindowFrame: Equatable {
     public let rect: CGRect
 }
 
-/// Fita horizontal de colunas (uma janela por coluna, por enquanto) e a viewport que rola sobre ela.
+/// Fita horizontal de colunas (uma ou mais janelas empilhadas por coluna) e a viewport que rola sobre ela.
 /// Uma por workspace (ver `Workspaces`).
 ///
 /// Coordenadas: as do AX, origem no canto superior esquerdo da tela principal.
@@ -83,9 +117,14 @@ public struct Layout {
         self.shift = Spring(0, stiffness: config.stiffness)
     }
 
-    public var focusedWindow: WindowID? { focusedIndex.map { columns[$0].window } }
-    public var windows: [WindowID] { columns.map(\.window) }
-    public func index(of window: WindowID) -> Int? { columns.firstIndex { $0.window == window } }
+    public var focusedWindow: WindowID? { focusedIndex.map { columns[$0].tiles[columns[$0].active].window } }
+    public var windows: [WindowID] { columns.flatMap(\.windows) }
+    /// A coluna da janela.
+    public func index(of window: WindowID) -> Int? { columns.firstIndex { $0.windows.contains(window) } }
+    /// A coluna da janela e o lugar dela na coluna (0 = a de cima).
+    func place(of window: WindowID) -> (column: Int, row: Int)? {
+        index(of: window).map { ($0, columns[$0].windows.firstIndex(of: window)!) }
+    }
 
     /// Largura em pontos de uma fração, contando os gaps: duas colunas de 0.5 cabem exatas na área.
     public func pixelWidth(_ proportion: Double) -> Double {
@@ -104,18 +143,50 @@ public struct Layout {
 
     private func spring(_ v: Double) -> Spring { Spring(v, stiffness: config.stiffness) }
 
+    private func tile(_ window: WindowID) -> Tile {
+        Tile(window: window, height: spring(area.height), dx: spring(0), dy: spring(0), dw: spring(0))
+    }
+
+    /// Altura alvo de cada janela da coluna: a parte dela da altura útil, mas nunca menos do que o app aceita (quem tem
+    /// limite fica nele, e as outras dividem o resto na mesma proporção). Se nem os limites cabem, cada uma fica no dela e
+    /// a de baixo passa do pé da tela: espremida, ela recusava e ficava por cima da outra (Discord 500 pt e WhatsApp
+    /// 600 pt numa coluna de 1048, visto no uso em 2026-10-16), e a conferência mandava o tamanho de novo sem parar.
+    func heights(_ c: Column) -> [Double] {
+        let n = c.tiles.count, avail = area.height - Double(n - 1) * config.gap
+        var fixed = Set<Int>()
+        while true {
+            let loose = c.tiles.indices.filter { !fixed.contains($0) }
+            let free = avail - fixed.reduce(0) { $0 + c.tiles[$1].minHeight }
+            let total = loose.reduce(0) { $0 + c.tiles[$1].share }
+            let h = c.tiles.indices.map { fixed.contains($0) || total <= 0 ? c.tiles[$0].minHeight : free * c.tiles[$0].share / total }
+            guard let i = loose.first(where: { h[$0] < c.tiles[$0].minHeight - 0.5 }) else { return h }
+            fixed.insert(i)
+        }
+    }
+
+    /// As alturas mínimas conhecidas dessas janelas cabem empilhadas numa coluna.
+    func fits(_ tiles: [Tile]) -> Bool {
+        tiles.reduce(0) { $0 + $1.minHeight } + Double(tiles.count - 1) * config.gap <= area.height
+    }
+
     /// Largura que a coluna ocupa: a pedida, ou o limite do app se ele não encolhe tanto.
     func slotWidth(_ c: Column) -> Double { max(pixelWidth(c.proportion), c.minWidth).rounded() }
 
     // MARK: - Mudanças na fita
 
-    /// Coloca uma janela no fim, sem animar. Só pra montar o estado inicial.
-    public mutating func append(_ window: WindowID, proportion: Double? = nil,
-                                savedProportion: Double? = nil, minWidth: Double = 0) {
-        let p = clamp(proportion ?? config.defaultProportion)
-        var c = Column(window: window, proportion: p, savedProportion: savedProportion,
+    /// Coloca uma janela no fim, sem animar. Só pra montar o estado inicial. `stacked`: embaixo das da última coluna.
+    public mutating func append(_ window: WindowID, proportion: Double? = nil, savedProportion: Double? = nil,
+                                minWidth: Double = 0, minHeight: Double = 0, share: Double = 1, stacked: Bool = false) {
+        var t = tile(window)
+        t.minWidth = minWidth >= area.width - 1 ? 0 : minWidth
+        t.minHeight = minHeight >= area.height - 1 ? 0 : minHeight
+        t.share = share > 0 ? share : 1
+        if stacked, !columns.isEmpty {
+            columns[columns.count - 1].tiles.append(t)
+            return
+        }
+        var c = Column(tiles: [t], proportion: clamp(proportion ?? config.defaultProportion), savedProportion: savedProportion,
                        width: spring(0), offset: spring(0))
-        c.minWidth = minWidth >= area.width - 1 ? 0 : minWidth
         c.width = spring(slotWidth(c))
         columns.append(c)
         if focusedIndex == nil { focusedIndex = 0 }
@@ -124,17 +195,21 @@ public struct Layout {
     /// Janela nova entra à direita da focada, ou na coluna `position` (a que volta pro lugar de onde saiu).
     /// As vizinhas da direita deslizam; ninguém encolhe.
     public mutating func insert(_ window: WindowID, proportion: Double? = nil, position: Int? = nil, focus: Bool, at t: Double) {
-        insert(Column(window: window, proportion: clamp(proportion ?? config.defaultProportion), savedProportion: nil,
+        insert(Column(tiles: [tile(window)], proportion: clamp(proportion ?? config.defaultProportion), savedProportion: nil,
                       width: spring(0), offset: spring(0)), position: position, focus: focus, at: t)
     }
 
     /// Coluna entra à direita da focada (ou em `position`), com a largura dela (vinda de outro workspace ou
     /// voltando de tela cheia: mantém a largura, a mínima e a de antes do Option+F).
     public mutating func insert(_ column: Column, position: Int? = nil, focus: Bool, at t: Double) {
-        guard index(of: column.window) == nil else { return }
+        guard column.windows.allSatisfy({ index(of: $0) == nil }) else { return }
         var c = column
         c.width = spring(slotWidth(c))
         c.offset = spring(0)
+        for (r, h) in heights(c).enumerated() {
+            c.tiles[r].height = spring(h)
+            (c.tiles[r].dx, c.tiles[r].dy, c.tiles[r].dw) = (spring(0), spring(0), spring(0))
+        }
         let k = min(position ?? focusedIndex.map { $0 + 1 } ?? columns.count, columns.count)
         showsDesktop = false  // janela nova aparece
         columns.insert(c, at: k)
@@ -145,10 +220,26 @@ public struct Layout {
         retarget(at: t)
     }
 
-    /// Tira a janela. Se era a focada, o foco vai pra vizinha da direita (ou da esquerda, se era a última).
+    /// Tira a janela. Se era a focada, o foco vai pra vizinha da direita (ou da esquerda, se era a última). Numa coluna
+    /// com outras, só ela sai: o foco vai pra de baixo (ou a de cima) e as outras crescem. Devolve uma coluna só com ela,
+    /// com a largura da de onde saiu.
     @discardableResult
     public mutating func remove(_ window: WindowID, at t: Double) -> Column? {
-        guard let k = index(of: window) else { return nil }
+        guard let (k, r) = place(of: window) else { return nil }
+        guard columns[k].tiles.count > 1 else { return removeColumn(k, at: t) }
+        let before = placements(at: t)
+        let tile = columns[k].tiles.remove(at: r)
+        if r < columns[k].active || columns[k].active == columns[k].tiles.count { columns[k].active -= 1 }
+        retarget(at: t)
+        restore(before.filter { columns[k].windows.contains($0.key) }, at: t)
+        var single = columns[k]
+        single.tiles = [tile]
+        single.tiles[0].share = 1
+        single.active = 0
+        return single
+    }
+
+    private mutating func removeColumn(_ k: Int, at t: Double) -> Column {
         let removed = columns[k]
         let freed = columns[k].width.value(at: t) + config.gap
         columns.remove(at: k)
@@ -169,12 +260,113 @@ public struct Layout {
         return removed
     }
 
+    /// A janela volta pra coluna de `sibling`, de onde saiu sem fechar (minimizada, escondida no X): logo embaixo dela
+    /// ou, com `above`, logo em cima. As da coluna dividem a altura por igual. false se `sibling` não está na fita.
+    /// Se as alturas mínimas não cabem juntas, também false (ela volta numa coluna própria).
+    public mutating func stack(_ column: Column, with sibling: WindowID, above: Bool, focus: Bool, at t: Double) -> Bool {
+        guard let (k, r) = place(of: sibling), let tile = column.tiles.first, index(of: tile.window) == nil,
+              fits(columns[k].tiles + [tile]) else { return false }
+        let before = placements(at: t).filter { columns[k].windows.contains($0.key) }, row = above ? r : r + 1
+        let active = columns[k].active
+        join(tile, into: k, row: row)
+        if focus { focusedIndex = k } else { columns[k].active = active < row ? active : active + 1 }
+        showsDesktop = false  // janela aparece
+        retarget(at: t)
+        columns[k].tiles[row].height.snap()  // ela aparece já no lugar; as outras saem de onde estão
+        restore(before, at: t)
+        return true
+    }
+
+    /// Põe a janela na coluna `k`, como a ativa dela, e divide a altura por igual.
+    private mutating func join(_ tile: Tile, into k: Int, row: Int) {
+        var t = tile
+        (t.dx, t.dy, t.dw) = (spring(0), spring(0), spring(0))
+        columns[k].tiles.insert(t, at: row)
+        for i in columns[k].tiles.indices { columns[k].tiles[i].share = 1 }
+        columns[k].active = row
+    }
+
+    /// Option+Cmd+, .: a focada, sozinha na coluna, entra na vizinha (`delta` -1 esquerda, 1 direita): embaixo das janelas
+    /// da esquerda ou em cima das da direita, como o `consume-or-expel-window-left/right` do niri, e a altura fica
+    /// dividida por igual. A coluna fica com a largura das duas somadas (duas de 1/2 lado a lado viram uma da tela toda,
+    /// partida no meio); no niri ela fica com a da coluna de destino, e a pilha aparecia estreita no meio da tela. Numa
+    /// coluna com outras, ela sai pra uma coluna só dela daquele lado, e as duas ficam com metade da largura. O foco fica
+    /// nela. Sozinha na ponta, ou se as alturas mínimas dos apps não cabem juntas, nada muda.
+    @discardableResult
+    public mutating func consumeOrExpel(_ delta: Int, at t: Double) -> Bool {
+        guard let f = focusedIndex, abs(delta) == 1 else { return false }
+        let before = placements(at: t), mates = columns[f].windows
+        if columns[f].tiles.count == 1 {
+            guard columns.indices.contains(f + delta), fits(columns[f + delta].tiles + columns[f].tiles) else { return false }
+            let moving = Set(columns[f + delta].windows + mates), width = columns[f].proportion + columns[f + delta].proportion
+            let tile = removeColumn(f, at: t).tiles[0]
+            let k = delta < 0 ? f - 1 : f
+            join(tile, into: k, row: delta < 0 ? columns[k].tiles.count : 0)
+            columns[k].proportion = clamp(width)
+            columns[k].savedProportion = nil
+            focusedIndex = k
+            retarget(at: t)
+            restore(before.filter { moving.contains($0.key) }, at: t)
+            // Primeiro a altura, cada uma ainda na coluna dela; depois as duas alargam, uma em cima e a outra embaixo.
+            postpone(horizontal: true, of: moving, at: t)
+        } else {
+            var c = columns[f]
+            let tile = c.tiles.remove(at: c.active)
+            c.active = min(c.active, c.tiles.count - 1)
+            c.proportion = clamp(c.proportion / 2)  // com o gap: duas de p/2 ocupam exatamente o espaço de uma de p
+            c.savedProportion = nil
+            columns[f] = c
+            c.tiles = [tile]
+            c.tiles[0].share = 1
+            c.active = 0
+            insert(c, position: delta < 0 ? f : f + 1, focus: true, at: t)
+            restore(before.filter { mates.contains($0.key) }, at: t)
+            // Primeiro a largura, cada uma ainda na sua altura; depois as duas crescem até o pé, lado a lado.
+            postpone(horizontal: false, of: Set(mates), at: t)
+        }
+        return true
+    }
+
+    /// Juntar e separar em duas fases, pra nenhuma janela passar por cima da outra: animando tudo junto, a que entra na
+    /// coluna atravessava a outra no caminho (visto no uso em 2026-10-16). A segunda fase (`horizontal`: a largura e a
+    /// rolagem; senão a altura) espera a primeira chegar a 0,7% do caminho, quando as janelas já não se cruzam: 7/ω,
+    /// 0,25 s com a mola padrão.
+    private mutating func postpone(horizontal: Bool, of windows: Set<WindowID>, at t: Double) {
+        let t1 = t + 7 / config.stiffness.squareRoot()
+        if horizontal {
+            view.postpone(from: t, to: t1)
+            for k in columns.indices {
+                columns[k].offset.postpone(from: t, to: t1)
+                columns[k].width.postpone(from: t, to: t1)
+            }
+        }
+        for k in columns.indices {
+            for r in columns[k].tiles.indices where windows.contains(columns[k].tiles[r].window) {
+                if horizontal {
+                    columns[k].tiles[r].dx.postpone(from: t, to: t1)
+                    columns[k].tiles[r].dw.postpone(from: t, to: t1)
+                } else {
+                    columns[k].tiles[r].height.postpone(from: t, to: t1)
+                    columns[k].tiles[r].dy.postpone(from: t, to: t1)
+                }
+            }
+        }
+    }
+
     /// Com a mesa à mostra, focar uma janela (Cmd+Tab, Dock) traz a fita de volta, mesmo sendo a focada.
     public mutating func focus(_ window: WindowID, at t: Double) {
-        guard let k = index(of: window), k != focusedIndex || showsDesktop else { return }
+        guard let (k, r) = place(of: window), k != focusedIndex || r != columns[k].active || showsDesktop else { return }
         focusedIndex = k
+        columns[k].active = r
         showsDesktop = false
         retarget(at: t)
+    }
+
+    /// Option ↑ ↓: foco na janela de cima (-1) ou de baixo (1) da coluna. Devolve a janela, ou nil se já está na ponta.
+    public mutating func focusInColumn(_ delta: Int) -> WindowID? {
+        guard let f = focusedIndex, columns[f].tiles.indices.contains(columns[f].active + delta) else { return nil }
+        columns[f].active += delta
+        return columns[f].tiles[columns[f].active].window
     }
 
     /// Move o foco `delta` colunas. Devolve a janela que deve receber foco, ou nil se já está na ponta.
@@ -184,7 +376,7 @@ public struct Layout {
         guard n != f else { return nil }
         focusedIndex = n
         retarget(at: t)
-        return columns[n].window
+        return focusedWindow
     }
 
     /// Troca a coluna focada de lugar com a vizinha (`delta` -1 esquerda, 1 direita), como o `move-column-left/right`
@@ -227,14 +419,46 @@ public struct Layout {
         resizeFocused(by: target - p, at: t)
     }
 
+    /// Option+Cmd +/-: altura da focada numa coluna com outras, pulando entre as frações da lista (1/3, 1/2, 2/3), como a
+    /// largura. As outras dividem o resto na proporção que já tinham. Não passa do que os apps aceitam (a altura mínima
+    /// aprendida). false se nada mudou (sozinha na coluna, ou na ponta da lista).
+    @discardableResult
+    public mutating func resizeFocusedHeight(toPresetIn presets: [Double], direction: Int, at t: Double) -> Bool {
+        guard let f = focusedIndex, columns[f].tiles.count > 1 else { return false }
+        let c = columns[f], i = c.active, h = heights(c), avail = h.reduce(0, +), p = h[i] / avail, eps = 0.01
+        let rest = c.tiles.indices.filter { $0 != i }
+        guard var q = direction > 0 ? presets.sorted().first(where: { $0 > p + eps }) : presets.sorted().last(where: { $0 < p - eps })
+        else { return false }
+        q = min(max(q, c.tiles[i].minHeight / avail), 1 - rest.reduce(0) { $0 + c.tiles[$1].minHeight } / avail)
+        guard q > 0, q < 1, (q - p) * Double(direction) > 0.001 else { return false }
+        let others = rest.reduce(0) { $0 + h[$1] }
+        for j in rest { columns[f].tiles[j].share = (1 - q) * h[j] / others }
+        columns[f].tiles[i].share = q
+        retarget(at: t)
+        return true
+    }
+
     /// O app recusou ficar mais estreito que `width`.
     /// Da largura da área útil ou mais não é crível: é leitura feita antes de um app assíncrono (Arc,
     /// Electron, WhatsApp) aplicar o tamanho. Aceitar travaria a coluna na tela toda (visto no uso: 1704 pt
     /// no Arc, no Discord e no WhatsApp).
-    public mutating func setMinWidth(_ window: WindowID, _ width: Double, at t: Double) {
-        guard let k = index(of: window), width > columns[k].minWidth + 1, width < area.width - 1 else { return }
-        columns[k].minWidth = width
+    /// true se o limite mudou.
+    @discardableResult
+    public mutating func setMinWidth(_ window: WindowID, _ width: Double, at t: Double) -> Bool {
+        guard let (k, r) = place(of: window), width > columns[k].tiles[r].minWidth + 1, width < area.width - 1 else { return false }
+        columns[k].tiles[r].minWidth = width
         retarget(at: t)
+        return true
+    }
+
+    /// O app recusou ficar mais baixo que `height` (numa coluna com outras). Da altura da área ou mais é leitura feita
+    /// antes de o app aplicar o tamanho, como na largura.
+    @discardableResult
+    public mutating func setMinHeight(_ window: WindowID, _ height: Double, at t: Double) -> Bool {
+        guard let (k, r) = place(of: window), height > columns[k].tiles[r].minHeight + 1, height < area.height - 1 else { return false }
+        columns[k].tiles[r].minHeight = height
+        retarget(at: t)
+        return true
     }
 
     /// Option+F: coluna ocupa a área toda; segundo toque volta pra largura anterior.
@@ -254,7 +478,7 @@ public struct Layout {
     public mutating func setDesktop(_ on: Bool, at t: Double) {
         // Voltando no meio do caminho, os lados continuam os mesmos.
         if on && !showsDesktop && desktop.value(at: t) < 1 {
-            desktopSplit = frames(at: t).prefix { $0.rect.midX < bounds.midX }.count
+            desktopSplit = positions(at: t).prefix { $0.x + $0.w / 2 < bounds.midX }.count
         }
         showsDesktop = on
         retarget(at: t)
@@ -284,21 +508,31 @@ public struct Layout {
             for i in columns.indices {
                 columns[i].width = respring(columns[i].width)
                 columns[i].offset = respring(columns[i].offset)
+                for r in columns[i].tiles.indices {
+                    columns[i].tiles[r].height = respring(columns[i].tiles[r].height)
+                    columns[i].tiles[r].dx = respring(columns[i].tiles[r].dx)
+                    columns[i].tiles[r].dy = respring(columns[i].tiles[r].dy)
+                    columns[i].tiles[r].dw = respring(columns[i].tiles[r].dw)
+                }
             }
         }
-        for i in columns.indices { columns[i].offset.displace(by: Double(i) * (config.gap - c.gap), at: t) }
+        for i in columns.indices {
+            columns[i].offset.displace(by: Double(i) * (config.gap - c.gap), at: t)
+            for r in columns[i].tiles.indices { columns[i].tiles[r].dy.displace(by: Double(r) * (config.gap - c.gap), at: t) }
+        }
         config = c
         retarget(at: t)
     }
 
     // MARK: - Alvos e frames
 
-    /// Recalcula larguras alvo e a rolagem alvo.
+    /// Recalcula larguras e alturas alvo e a rolagem alvo.
     /// Regra de rolagem (a padrão do niri): mexe o mínimo pra coluna focada ficar inteira na tela.
     public mutating func retarget(at t: Double) {
         desktop.retarget(showsDesktop ? 1000 : 0, at: t)
         for i in columns.indices {
             columns[i].width.retarget(slotWidth(columns[i]), at: t)
+            for (r, h) in heights(columns[i]).enumerated() { columns[i].tiles[r].height.retarget(h, at: t) }
         }
         guard let f = focusedIndex else {
             view.retarget(0, at: t)
@@ -351,6 +585,48 @@ public struct Layout {
         }
     }
 
+    /// Retângulo de cada janela da coluna em `x`, com largura `w`, antes de estacionar na borda e sem arredondar. A altura
+    /// acumula de cima pra baixo: arredondando só no fim, o espaço entre janelas da coluna fica sempre exatamente `gap`.
+    private func rects(_ c: Column, x: Double, w: Double, at t: Double) -> [CGRect] {
+        var y = area.minY
+        return c.tiles.map { tile in
+            let h = tile.height.value(at: t)
+            defer { y += h + config.gap }
+            return CGRect(x: x + tile.dx.value(at: t), y: y + tile.dy.value(at: t), width: w + tile.dw.value(at: t), height: h)
+        }
+    }
+
+    /// Onde cada janela está agora, antes de estacionar na borda e sem a mesa e o workspace.
+    private func placements(at t: Double) -> [WindowID: CGRect] {
+        var out: [WindowID: CGRect] = [:]
+        for (c, (x, w)) in zip(columns, positions(at: t)) {
+            for (tile, r) in zip(c.tiles, rects(c, x: x, w: w, at: t)) { out[tile.window] = r }
+        }
+        return out
+    }
+
+    /// Depois de mudar a coluna das janelas de `before` (uma entrou, saiu ou mudou de altura): cada uma continua onde
+    /// estava na tela e anda até o lugar novo com a mola. A altura vai antes, porque o lugar de cada uma depende da altura
+    /// das de cima.
+    private mutating func restore(_ before: [WindowID: CGRect], at t: Double) {
+        for k in columns.indices {
+            for r in columns[k].tiles.indices {
+                guard let b = before[columns[k].tiles[r].window] else { continue }
+                columns[k].tiles[r].height.displace(by: b.height - columns[k].tiles[r].height.value(at: t), at: t)
+            }
+        }
+        let now = placements(at: t)
+        for k in columns.indices {
+            for r in columns[k].tiles.indices {
+                let id = columns[k].tiles[r].window
+                guard let b = before[id], let n = now[id] else { continue }
+                columns[k].tiles[r].dx.displace(by: b.minX - n.minX, at: t)
+                columns[k].tiles[r].dy.displace(by: b.minY - n.minY, at: t)
+                columns[k].tiles[r].dw.displace(by: b.width - n.width, at: t)
+            }
+        }
+    }
+
     public func frames(at t: Double) -> [WindowFrame] {
         let xs = positions(at: t)
         // Mesa: cada lado sai inteiro, junto (o gap entre vizinhas do mesmo lado continua exato), até a
@@ -362,25 +638,28 @@ public struct Layout {
         // Fita parada fora da tela (outro workspace): tudo estacionado, mesmo que ela tenha mudado depois de sair
         // (janela nova, largura nova) e o deslocamento da troca já não baste pra tirar tudo da tela.
         let away = shift.target != 0 && shift.isSettled(at: t)
-        return zip(columns, xs).enumerated().map { i, cx in
-            let (c, (x, w)) = cx
-            // Fora da viewport: encosta na borda da tela com `sliver` pt visíveis.
-            // Como é um clamp, a janela sai da borda de forma contínua quando a fita rola.
-            let lo = bounds.minX - w + config.sliver, hi = bounds.maxX - config.sliver
-            var sx = min(max(x + (i < k ? -left : right), lo), hi)
-            // Workspace entrando ou saindo: desliza junto toda coluna que aparece na tela, mesmo só em parte (a
-            // distância da troca tira ela inteira; ver `Workspaces.switchTo`). A que está fora da viewport fica
-            // estacionada: deslocada junto, ela entraria na tela (a 2ª coluna do workspace saindo pela esquerda
-            // caía em x = 0, atrás da janela focada; visto no uso em 2026-10-16).
-            if away {
-                sx = shift.target < 0 ? lo : hi
-            } else if s != 0 && sx > lo && sx < hi {
-                sx = min(max(sx + s, lo), hi)
+        var out: [WindowFrame] = []
+        for (i, (c, (x, w))) in zip(columns, xs).enumerated() {
+            for (tile, r) in zip(c.tiles, rects(c, x: x, w: w, at: t)) {
+                let w = r.width.rounded()
+                // Fora da viewport: encosta na borda da tela com `sliver` pt visíveis.
+                // Como é um clamp, a janela sai da borda de forma contínua quando a fita rola.
+                let lo = bounds.minX - w + config.sliver, hi = bounds.maxX - config.sliver
+                var sx = min(max(r.minX + (i < k ? -left : right), lo), hi)
+                // Workspace entrando ou saindo: desliza junto toda coluna que aparece na tela, mesmo só em parte (a
+                // distância da troca tira ela inteira; ver `Workspaces.switchTo`). A que está fora da viewport fica
+                // estacionada: deslocada junto, ela entraria na tela (a 2ª coluna do workspace saindo pela esquerda
+                // caía em x = 0, atrás da janela focada; visto no uso em 2026-10-16).
+                if away {
+                    sx = shift.target < 0 ? lo : hi
+                } else if s != 0 && sx > lo && sx < hi {
+                    sx = min(max(sx + s, lo), hi)
+                }
+                let y = r.minY.rounded()
+                out.append(WindowFrame(window: tile.window, rect: CGRect(x: sx.rounded(), y: y, width: w, height: r.maxY.rounded() - y)))
             }
-            return WindowFrame(window: c.window, rect: CGRect(
-                x: sx.rounded(), y: area.minY.rounded(),
-                width: w, height: area.height.rounded()))
         }
+        return out
     }
 
     /// Quanto a fita precisa andar pro lado `side` (-1 esquerda, 1 direita) pra tirar da tela tudo que aparece
@@ -397,11 +676,14 @@ public struct Layout {
     /// Todas as molas a menos de `d` do fim (pt; a da mesa, em milésimos do caminho).
     public func isNear(at t: Double, within d: Double) -> Bool {
         view.isNear(at: t, within: d) && desktop.isNear(at: t, within: d) && shift.isNear(at: t, within: d)
-            && columns.allSatisfy { $0.width.isNear(at: t, within: d) && $0.offset.isNear(at: t, within: d) }
+            && columns.allSatisfy { $0.width.isNear(at: t, within: d) && $0.offset.isNear(at: t, within: d)
+                && $0.tiles.allSatisfy { $0.isNear(at: t, within: d) } }
     }
 
     public func isSettled(at t: Double) -> Bool {
-        view.isSettled(at: t) && desktop.isSettled(at: t) && shift.isSettled(at: t) && columns.allSatisfy { $0.width.isSettled(at: t) && $0.offset.isSettled(at: t) }
+        view.isSettled(at: t) && desktop.isSettled(at: t) && shift.isSettled(at: t)
+            && columns.allSatisfy { $0.width.isSettled(at: t) && $0.offset.isSettled(at: t)
+                && $0.tiles.allSatisfy { $0.isSettled(at: t) } }
     }
 
     public mutating func snapToTargets() {
@@ -411,6 +693,7 @@ public struct Layout {
         for i in columns.indices {
             columns[i].width.snap()
             columns[i].offset.snap()
+            for r in columns[i].tiles.indices { columns[i].tiles[r].snap() }
         }
     }
 }

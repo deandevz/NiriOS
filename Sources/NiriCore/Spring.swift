@@ -61,6 +61,12 @@ public struct Spring {
         start = t
     }
 
+    /// A mudança feita em `t` (retarget ou displace) só começa a andar em `t1`: até lá fica parada onde estava. Mola que
+    /// não mudou em `t` não é tocada.
+    public mutating func postpone(from t: Double, to t1: Double) {
+        if start == t { start = t1 }
+    }
+
     /// Translada a animação inteira (posição e alvo). Nada muda visualmente.
     public mutating func shift(by d: Double) {
         from += d

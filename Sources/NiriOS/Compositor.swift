@@ -64,8 +64,9 @@ final class GhostOverlay {
     }
 
     /// Vidro no lugar da janela, com o ícone do app no meio e o canto dela. Se ele estava sumindo (outra
-    /// tecla logo depois), volta inteiro.
+    /// tecla logo depois), volta inteiro. O último mostrado fica por cima dos outros.
     func show(_ id: CGWindowID, of pid: pid_t, at r: CGRect, radius: Double) {
+        if let g = glass[id] { window.contentView!.addSubview(g, positioned: .above, relativeTo: nil) }
         let g = glass[id] ?? makeGlass(id, at: flip(r), radius: radius, icon: NSRunningApplication(processIdentifier: pid)?.icon)
         glass[id] = g
         g.layer?.removeAllAnimations()
