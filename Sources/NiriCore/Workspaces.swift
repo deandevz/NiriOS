@@ -72,22 +72,29 @@ public struct Workspaces {
         return strips[k].remove(window, at: t)
     }
 
-    /// Lista nova do config. Os workspaces são casados pelo nome; as janelas de um que saiu da lista vão pro
-    /// atual (nenhuma janela fica perdida fora da tela). Se o atual saiu, o 1º da lista entra.
-    public mutating func setNames(_ list: [String], at t: Double) {
+    /// Lista nova do config. Os workspaces são casados pelo nome, e nome novo no lugar de um que saiu é o mesmo
+    /// workspace renomeado (pelo painel ou à mão): as janelas vão junto. As de um que saiu da lista vão pro atual
+    /// (nenhuma janela fica perdida fora da tela). Se o atual saiu, o 1º da lista entra. Devolve os renomeados,
+    /// do nome velho pro novo.
+    @discardableResult
+    public mutating func setNames(_ list: [String], at t: Double) -> [String: String] {
         let list = list.isEmpty ? ["1"] : list
-        guard list != names else { return }
-        let orphans = names.indices.filter { !list.contains(names[$0]) }.flatMap { strips[$0].columns }
-        let template = strips[0]
-        let now = list.firstIndex(of: names[active]) ?? 0
-        strips = list.map { n in
-            names.firstIndex(of: n).map { strips[$0] } ?? Layout(area: template.area, bounds: template.bounds, config: template.config)
+        guard list != names else { return [:] }
+        let source = list.indices.map { i in
+            names.firstIndex(of: list[i]) ?? (names.indices.contains(i) && !list.contains(names[i]) ? i : nil)
         }
+        let orphans = names.indices.filter { !source.contains($0) }.flatMap { strips[$0].columns }
+        let renamed = Dictionary(uniqueKeysWithValues: zip(source, list).compactMap { k, n in k.map { (names[$0], n) } }
+            .filter { $0 != $1 })
+        let template = strips[0]
+        let now = source.firstIndex(of: active) ?? 0
+        strips = source.map { $0.map { strips[$0] } ?? Layout(area: template.area, bounds: template.bounds, config: template.config) }
         names = list
         active = now
         for i in strips.indices where i != now && strips[i].shift.target == 0 { strips[i].park((i < now ? -1 : 1) * template.bounds.width) }
         strips[now].slide(to: 0, at: t)
         for c in orphans { strips[now].insert(c, focus: false, at: t) }
+        return renamed
     }
 
     public func frames(at t: Double) -> [WindowFrame] { strips.flatMap { $0.frames(at: t) } }

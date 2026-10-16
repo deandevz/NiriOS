@@ -203,6 +203,17 @@ private func checkPartlyVisibleColumnSlides(_ w: inout Workspaces, from k0: Int,
     #expect(Set(w[0].windows) == [11, 1, 2, 21])  // os do 1 e do 3 vieram pro atual
 }
 
+/// Nome novo no lugar de um que saiu é o mesmo workspace: as janelas ficam nele, inclusive no da tela.
+@Test func renamingInPlaceKeepsWindows() {
+    var w = makeWorkspaces([2, 1, 1])
+    #expect(w.setNames(["A", "W", "3"], at: 0) == ["1": "A", "2": "W"])
+    #expect(w.names == ["A", "W", "3"] && w.active == 0)
+    #expect(w[0].windows == [1, 2] && w[1].windows == [11] && w[2].windows == [21])
+    // Trocar de lugar e incluir um novo não é renomear.
+    #expect(w.setNames(["W", "A", "N", "3"], at: 0).isEmpty)
+    #expect(w.active == 1 && w[0].windows == [11] && w[1].windows == [1, 2] && w[2].windows.isEmpty)
+}
+
 /// Com a mesa à mostra, trocar leva a fita direto pro lado dela; voltando, ela aparece normal.
 @Test func switchingWithDesktopShownRestoresIt() {
     var w = makeWorkspaces([2, 1])

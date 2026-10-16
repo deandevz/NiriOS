@@ -78,6 +78,16 @@ struct Config {
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
+    /// O padrão de uma ação. Workspace: Option+<nome> pra ir e Option+Shift+<nome> pra mandar a janela, se o
+    /// nome for uma tecla (um workspace "Web" fica sem).
+    static func defaults(for a: Action) -> [Shortcut] {
+        switch a {
+        case .workspace(let n): Shortcut("option+" + n.lowercased()).map { [$0] } ?? []
+        case .moveToWorkspace(let n): Shortcut("option+shift+" + n.lowercased()).map { [$0] } ?? []
+        default: defaultShortcuts[a] ?? []
+        }
+    }
+
     /// `NIRI_CONFIG=<arquivo>` usa outro (pra testar uma config sem mexer na de uso).
     static let path = ProcessInfo.processInfo.environment["NIRI_CONFIG"].map { URL(fileURLWithPath: $0) }
         ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/niri-os/config.json")
@@ -119,23 +129,20 @@ struct Config {
                 return nil
             }
         }
-        // Workspaces: nome sozinho ou {name, apps, key, moveKey}. Sem key/moveKey: Option+<nome> e
-        // Option+Shift+<nome>, se o nome for uma tecla; "" ou [] desliga.
+        // Workspaces: nome sozinho ou {name, apps, open, key, moveKey}. Sem key/moveKey, o padrão; "" ou [] desliga.
         for item in obj["workspaces"] as? [Any] ?? ["1", "2", "3", "4"] {
             let o = item as? [String: Any] ?? [:]
             guard let name = text(item) ?? text(o["name"]), !name.isEmpty else { warn("workspace sem nome"); continue }
             guard !c.workspaces.contains(where: { $0.name == name }) else { warn("workspace '\(name)' repetido"); continue }
             c.workspaces.append(WorkspaceRule(name: name, apps: o["apps"] as? [String] ?? [], open: text(o["open"])))
-            func keys(_ field: String, _ fallback: String) -> [Shortcut] {
-                guard let v = o[field] else { return Shortcut(fallback + name.lowercased()).map { [$0] } ?? [] }
-                return ((v as? String).map { [$0] } ?? v as? [String] ?? []).filter { !$0.isEmpty }.compactMap {
+            for (field, action) in [("key", Action.workspace(name)), ("moveKey", .moveToWorkspace(name))] {
+                guard let v = o[field] else { c.shortcuts[action] = defaults(for: action); continue }
+                c.shortcuts[action] = ((v as? String).map { [$0] } ?? v as? [String] ?? []).filter { !$0.isEmpty }.compactMap {
                     if let k = Shortcut($0) { return k }
                     warn("atalho inválido em \(field) do workspace \(name): '\($0)'")
                     return nil
                 }
             }
-            c.shortcuts[.workspace(name)] = keys("key", "option+")
-            c.shortcuts[.moveToWorkspace(name)] = keys("moveKey", "option+shift+")
         }
         if c.workspaces.isEmpty { c.workspaces = [WorkspaceRule(name: "1")] }  // "workspaces": [] = um só, sem atalho
         c.onWorkspaceChange = (obj["onWorkspaceChange"] as? String).flatMap { $0.isEmpty ? nil : $0 }

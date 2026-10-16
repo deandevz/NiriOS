@@ -39,7 +39,9 @@ final class WindowManager: NSObject {
     /// as vizinhas e a coluna (largura), pra ela voltar igual, e não como janela nova (à direita da focada, no
     /// workspace da tela, com 50%). Some quando ela volta, fecha ou o app sai.
     private struct Away {
-        let pid: pid_t, workspace: String, left: CGWindowID?, right: CGWindowID?, column: Column
+        let pid: pid_t
+        var workspace: String
+        let left: CGWindowID?, right: CGWindowID?, column: Column
     }
     private var away: [CGWindowID: Away] = [:]
     /// A janela que ficou com o teclado quando a tela foi pra um workspace vazio (o macOS não tira o foco dela).
@@ -109,10 +111,12 @@ final class WindowManager: NSObject {
         guard dev.pid == nil else { return }
         let now = CACurrentMediaTime(), geo = Self.screenGeometry(c), names = c.workspaces.map(\.name)
         guard c.layout != layout.config || geo.area != layout.area || names != workspaces.names else { return }
-        workspaces.setNames(names, at: now)
+        let renamed = workspaces.setNames(names, at: now)
+        for (id, a) in away { if let n = renamed[a.workspace] { away[id]?.workspace = n } }
         workspaces.setConfig(c.layout, at: now)
         workspaces.setArea(geo.area, bounds: geo.bounds, at: now)
         animate()
+        if !renamed.isEmpty { announceWorkspace() }  // a barra mostra o nome novo
     }
 
     /// Painel de configurações fechado: o teclado volta pra janela focada da fita.

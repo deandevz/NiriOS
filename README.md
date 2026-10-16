@@ -139,7 +139,23 @@ Primeira medição (2026-10-15, painéis de teste, 5 resizes seguidos): maior in
 
 ## Barra de menu e painel de configurações (2026-10-15)
 
-Ícone na barra (três colunas, a do meio maior: a fita com a focada no centro). Clique esquerdo ou direito abre o painel: atalhos (gravar um novo com `+`, remover com o x no canto da tecla, voltar ao padrão), cor e espessura da borda do vidro com prévia (o mesmo `NSVisualEffectView` do resize, sobre o papel de parede), e o arquivo (abrir, mostrar no Finder, recarregar, avisos de config inválida).
+Ícone na barra (três colunas, a do meio maior: a fita com a focada no centro). Clique esquerdo ou direito abre o painel, com uma aba por assunto na barra de ferramentas, como os Ajustes dos apps do Mac (desde 2026-10-16; antes era uma página só, com texto explicando cada parte). A janela muda de altura com a aba e abre na última usada.
+
+- **Atalhos:** gravar um novo com `+` (Esc cancela; sem ⌃ ⌥ ⌘ a tecla avisa "Use ⌃, ⌥ ou ⌘"), remover com o x no canto da tecla, voltar ao padrão.
+- **Workspaces:** a lista na ordem da tela, com os ícones dos apps de cada um. `+` cria (o próximo número livre), `−` apaga (as janelas dele vão pro workspace da tela), arrastar muda a ordem. À direita, o escolhido: nome, os dois atalhos, os apps que abrem nele e o app que abre quando ele está vazio (`open`).
+- **Papel de parede:** prévia, arquivo e efeito.
+- **Borda:** cor e espessura do vidro do resize, com prévia (o mesmo `NSVisualEffectView` do resize, sobre o papel de parede).
+- **Geral:** o arquivo (abrir, mostrar no Finder, recarregar) e sair.
+- Problema no config (JSON inválido, atalho repetido) aparece embaixo de qualquer aba.
+
+Workspaces pelo painel:
+
+- **Renomear leva as janelas junto.** Nome novo no lugar de um que saiu da lista é o mesmo workspace renomeado (`Workspaces.setNames`; vale também editando o arquivo à mão). O nome só vale no Enter ou ao sair do campo: cada letra seria um workspace novo. Janela minimizada ou em tela cheia guardada com o nome velho volta pro novo.
+- **Atalho no padrão segue o nome:** renomear 5 pra W troca ⌥5 por ⌥W. Padrão que já é de outra ação fica de fora (um workspace D não pega o ⌥D, que é da mesa).
+- **Adicionar app:** os apps abertos num menu, com o workspace onde cada um abre hoje ("Discord (no 2)"), porque escolher tira de lá; ou qualquer app pelo Finder ("Outro…"). Grava o bundle id. Padrão com `*` só pelo arquivo; o painel mostra o ícone do primeiro app de /Applications que bate.
+- **O arquivo fica como a pessoa escreveu:** workspace sem nada além do padrão vai só com o nome (`"Y"`), e criar e apagar um workspace deixou o config de uso idêntico ao original (conferido com `diff`).
+
+Memória do painel (release, config de uso): 34 MB aberto em Atalhos, 39 MB em Workspaces, 74 MB com pico de 285 MB depois de passar pelas 5 abas (a página única era ~50 MB com pico de ~260). Cada aba só carrega quando é aberta, e o processo sai ao fechar.
 
 Como funciona:
 
