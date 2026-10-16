@@ -312,9 +312,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     var isVideo: Bool { wallpaper.map(WallpaperArt.isVideo) ?? false }
     /// Com efeito, a prévia é um recorte do centro em tamanho real; sem efeito, a tela inteira reduzida.
     var cropped: Bool { effect != .none && !isVideo }
+    /// No formato da tela e um pouco mais larga que a linha do painel (~500 pt): cobre o quadro sem faixa preta.
     var previewBox: CGSize {
         let s = NSScreen.screens[0].frame.size
-        return cropped ? CGSize(width: 520, height: 200) : CGSize(width: (200 * s.width / s.height).rounded(), height: 200)
+        return CGSize(width: 560, height: (560 * s.height / s.width).rounded())
     }
 
     func load(_ c: Config) {
@@ -419,7 +420,7 @@ private struct SettingsView: View {
             }
 
             Section {
-                WallpaperPreview(image: model.preview, cropped: model.cropped, height: model.previewBox.height)
+                WallpaperPreview(image: model.preview, cropped: model.cropped, box: model.previewBox)
                 LabeledContent("Arquivo") {
                     HStack {
                         Text(model.wallpaper?.lastPathComponent ?? "O do macOS")
@@ -552,24 +553,26 @@ private struct KeyCap: View {
     }
 }
 
-/// Prévia do papel de parede em pixels reais (sem filtro: o dither tem que aparecer em blocos nítidos).
+/// Prévia do papel de parede num quadro no formato da tela, na largura da linha. A tela inteira é reduzida
+/// pra caber; o recorte com efeito fica em pixels reais (sem filtro: o dither tem que aparecer em blocos nítidos).
 private struct WallpaperPreview: View {
     let image: CGImage?
     let cropped: Bool
-    let height: Double
+    let box: CGSize
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(decorative: image, scale: NSScreen.screens[0].backingScaleFactor).interpolation(cropped ? .none : .high)
-            } else {
-                Text("Papel de parede do macOS").foregroundStyle(.secondary)
+        Color.black
+            .aspectRatio(box.width / box.height, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                if let image {
+                    let img = Image(decorative: image, scale: NSScreen.screens[0].backingScaleFactor)
+                    if cropped { img.interpolation(.none) } else { img.resizable().interpolation(.high).aspectRatio(contentMode: .fill) }
+                } else {
+                    Text("Papel de parede do macOS").foregroundStyle(.secondary)
+                }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: height)
-        .background(.black)
-        .clipShape(.rect(cornerRadius: 8))
+            .clipShape(.rect(cornerRadius: 8))
         .overlay(alignment: .bottomTrailing) {
             if cropped && image != nil {
                 Text("centro, em tamanho real").font(.caption2).foregroundStyle(.white.opacity(0.8))
