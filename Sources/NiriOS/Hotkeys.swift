@@ -1,7 +1,9 @@
 import AppKit
-import Carbon.HIToolbox
+import NiriCore
+import os
 
-enum Action {
+/// O nome de cada ação é a chave dela em "shortcuts" no config.json.
+enum Action: String, CaseIterable {
     case grow, shrink, focusLeft, focusRight, toggleFullWidth
 }
 
@@ -12,32 +14,47 @@ enum Action {
 /// Acessibilidade que o resto já exige.
 /// Roda numa thread própria: se a main travar, o tap não estoura o timeout do sistema.
 final class HotkeyTap {
-    /// Códigos de tecla são posicionais: valem pra US, US Internacional e ABNT2.
-    /// Shift é aceito, então Option+< e Option+> funcionam igual a Option+, e Option+.
-    static let bindings: [Int64: Action] = [
-        Int64(kVK_ANSI_Equal): .grow,
-        Int64(kVK_ANSI_KeypadPlus): .grow,
-        Int64(kVK_ANSI_Minus): .shrink,
-        Int64(kVK_ANSI_KeypadMinus): .shrink,
-        Int64(kVK_ANSI_Comma): .focusLeft,
-        Int64(kVK_ANSI_Period): .focusRight,
-        // Option+setas também: no terminal e no editor elas deixam de pular palavra.
-        Int64(kVK_LeftArrow): .focusLeft,
-        Int64(kVK_RightArrow): .focusRight,
-        Int64(kVK_ANSI_F): .toggleFullWidth,
-    ]
+    /// Escrito na main (config recarregada, painel gravando atalho) e lido na thread do tap.
+    private struct State {
+        var bindings: [Shortcut: Action] = [:]
+        /// Os modificadores de cada atalho, sem o Shift (ver `onModifiers`).
+        var holds: Set<UInt64> = []
+        var paused = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     private let handler: (Action) -> Void
-    /// Option apertado sozinho / solto: a transição do resize fotografa antes da tecla chegar, e o
-    /// resize fantasma só devolve a janela quando ele sobe.
-    var onOption: ((Bool) -> Void)?
-    private var optionDown = false
+    /// Os modificadores de algum atalho apertados (no padrão, o Option sozinho) / soltos: a transição do
+    /// resize fotografa antes da tecla chegar, e o resize fantasma só devolve a janela quando eles sobem.
+    /// Shift não conta, pra Option+< (Shift+,) não soltar no meio.
+    var onModifiers: ((Bool) -> Void)?
+    private var modifiersDown = false
     private let verbose: Bool
     private var port: CFMachPort?
 
     init(verbose: Bool, handler: @escaping (Action) -> Void) {
         self.verbose = verbose
         self.handler = handler
+    }
+
+    func setShortcuts(_ shortcuts: [Action: [Shortcut]]) {
+        var bindings: [Shortcut: Action] = [:]
+        for (action, keys) in shortcuts { for k in keys { bindings[k] = action } }
+        // Atalho sem modificador não segura nada: a janela do resize fantasma volta assim que a fita para.
+        let holds = Set(bindings.keys.map { $0.mods.subtracting(.maskShift).rawValue }).subtracting([0])
+        state.withLock { [bindings] in $0.bindings = bindings; $0.holds = holds }
+    }
+
+    /// Pausado, toda tecla passa direto pro app da frente (o painel gravando um atalho novo).
+    var paused: Bool {
+        get { state.withLock { $0.paused } }
+        set { state.withLock { $0.paused = newValue } }
+    }
+
+    /// Os modificadores de algum atalho estão apertados agora, segundo o estado do teclado.
+    func modifiersHeld() -> Bool {
+        let mods = CGEventSource.flagsState(.hidSystemState).intersection(Shortcut.modifierMask).subtracting(.maskShift)
+        return state.withLock { $0.holds.contains(mods.rawValue) }
     }
 
     func start() -> Bool {
@@ -71,28 +88,33 @@ final class HotkeyTap {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let port { CGEvent.tapEnable(tap: port, enable: true) }
             log("tap de teclado reativado (\(type == .tapDisabledByTimeout ? "timeout" : "input"))")
-            // O Option pode ter subido com o tap desligado: sem isso a janela do resize fantasma ficaria escondida.
-            if optionDown, let onOption {
-                optionDown = false
-                DispatchQueue.main.async { onOption(false) }
+            // Os modificadores podem ter subido com o tap desligado: sem isso a janela do resize fantasma ficaria escondida.
+            if modifiersDown, let onModifiers {
+                modifiersDown = false
+                DispatchQueue.main.async { onModifiers(false) }
             }
             return Unmanaged.passUnretained(event)
         }
-        let mods = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl])
+        let (bindings, holds, paused) = state.withLock { ($0.bindings, $0.holds, $0.paused) }
+        let mods = event.flags.intersection(Shortcut.modifierMask)
         if type == .flagsChanged {
-            let down = mods == .maskAlternate
-            if down != optionDown, let onOption {
-                optionDown = down
-                DispatchQueue.main.async { onOption(down) }
+            let down = holds.contains(mods.subtracting(.maskShift).rawValue)
+            if down != modifiersDown, let onModifiers {
+                modifiersDown = down
+                DispatchQueue.main.async { onModifiers(down) }
             }
             return Unmanaged.passUnretained(event)
         }
+        guard !paused else { return Unmanaged.passUnretained(event) }
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-        if verbose && type == .keyDown && mods.contains(.maskAlternate) {
-            log("tecla: código \(keycode), modificadores 0x\(String(event.flags.rawValue, radix: 16)) -> \(Self.bindings[keycode].map { "\($0)" } ?? "sem atalho")")
+        // Com Shift: o atalho com Shift, se existe; senão o mesmo sem ele (Option+< = Option+,).
+        let action = bindings[Shortcut(key: keycode, mods: mods)]
+            ?? (mods.contains(.maskShift) ? bindings[Shortcut(key: keycode, mods: mods.subtracting(.maskShift))] : nil)
+        // Só com os modificadores de algum atalho: o log não registra o que a pessoa digita.
+        if verbose && type == .keyDown && holds.contains(mods.subtracting(.maskShift).rawValue) {
+            log("tecla: \(Shortcut(key: keycode, mods: mods)) (código \(keycode)) -> \(action.map { "\($0)" } ?? "sem atalho")")
         }
-        guard mods == .maskAlternate, let action = Self.bindings[keycode]
-        else { return Unmanaged.passUnretained(event) }
+        guard let action else { return Unmanaged.passUnretained(event) }
 
         if type == .keyDown {
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0

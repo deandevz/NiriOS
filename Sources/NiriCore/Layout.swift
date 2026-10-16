@@ -12,7 +12,7 @@ public enum CenterMode: String {
     case onOverflow = "on-overflow"
 }
 
-public struct LayoutConfig {
+public struct LayoutConfig: Equatable {
     /// Espaço entre colunas (pt).
     public var gap: Double = 12
     /// Largura de janela nova, como fração da área útil.
@@ -59,7 +59,7 @@ public struct Layout {
     public private(set) var area: CGRect
     /// Tela inteira. Usada pra estacionar janelas fora da viewport.
     public private(set) var bounds: CGRect
-    public let config: LayoutConfig
+    public private(set) var config: LayoutConfig
     var view: Spring
 
     public init(area: CGRect, bounds: CGRect, config: LayoutConfig) {
@@ -203,9 +203,32 @@ public struct Layout {
         retarget(at: t)
     }
 
+    /// A viewport acompanha o deslocamento da área: nada pula, e as janelas deslizam pro lugar novo.
     public mutating func setArea(_ area: CGRect, bounds: CGRect, at t: Double) {
+        view.shift(by: area.minX - self.area.minX)
         self.area = area
         self.bounds = bounds
+        retarget(at: t)
+    }
+
+    /// Config nova (recarregada do arquivo). As janelas saem de onde estão e deslizam pro layout novo:
+    /// as molas são refeitas com a rigidez nova a partir do valor atual, e a diferença de gap vira
+    /// deslocamento animado.
+    public mutating func setConfig(_ c: LayoutConfig, at t: Double) {
+        func respring(_ s: Spring) -> Spring {
+            var n = Spring(s.value(at: t), stiffness: c.stiffness)
+            n.retarget(s.target, at: t)
+            return n
+        }
+        if c.stiffness != config.stiffness {
+            view = respring(view)
+            for i in columns.indices {
+                columns[i].width = respring(columns[i].width)
+                columns[i].offset = respring(columns[i].offset)
+            }
+        }
+        for i in columns.indices { columns[i].offset.displace(by: Double(i) * (config.gap - c.gap), at: t) }
+        config = c
         retarget(at: t)
     }
 

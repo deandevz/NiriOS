@@ -12,7 +12,7 @@ struct DevOptions {
 
 /// Dono do estado. Tudo aqui roda na main; chamadas de Acessibilidade vão pras filas dos apps.
 final class WindowManager: NSObject {
-    private let config: Config
+    private(set) var config: Config
     private let verbose: Bool
     private let dev: DevOptions
     private var layout: Layout
@@ -35,7 +35,8 @@ final class WindowManager: NSObject {
     private var maxTickGap = 0.0
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
-        tap.onOption = { [weak self] down in self?.optionChanged(down) }
+        tap.setShortcuts(config.shortcuts)
+        tap.onModifiers = { [weak self] down in self?.modifiersChanged(down) }
         return tap
     }()
 
@@ -65,6 +66,35 @@ final class WindowManager: NSObject {
                           width: vis.width - 2 * c.gap,
                           height: vis.height - 2 * c.gap - c.topPadding - c.bottomPadding)
         return (area, toAX(screen.frame))
+    }
+
+    /// Config recarregada (arquivo salvo ou painel). Atalhos e borda do vidro valem na hora; gap, margens,
+    /// mola e centralização animam as janelas pro layout novo. `resizeStyle` e `axTimeout` só ao reiniciar.
+    func apply(_ c: Config) {
+        let old = config
+        config = c
+        hotkeys.setShortcuts(c.shortcuts)
+        ghost?.border = (c.ghostBorderColor, c.ghostBorderWidth)
+        if c.resizeStyle != old.resizeStyle || c.axTimeout != old.axTimeout {
+            log("config: resizeStyle e axTimeout mudam só ao reiniciar o niri-os")
+        }
+        guard dev.pid == nil else { return }
+        let now = CACurrentMediaTime(), geo = Self.screenGeometry(c)
+        guard c.layout != layout.config || geo.area != layout.area else { return }
+        layout.setConfig(c.layout, at: now)
+        layout.setArea(geo.area, bounds: geo.bounds, at: now)
+        animate()
+    }
+
+    /// Painel de configurações fechado: o teclado volta pra janela focada da fita.
+    func refocus() {
+        if let f = layout.focusedWindow { requestFocus(f) }
+    }
+
+    /// O painel pausa os atalhos enquanto grava um novo: senão o tap engoliria a combinação.
+    var shortcutsPaused: Bool {
+        get { hotkeys.paused }
+        set { hotkeys.paused = newValue }
     }
 
     // MARK: - Ciclo de vida
@@ -374,10 +404,11 @@ final class WindowManager: NSObject {
     private var prefetched: (version: Int, photos: [CGWindowID: TransitionOverlay.Photo], background: CGImage?)?
     private var prefetchVersion = 0
     private var layoutVersion = 0
-    private var optionHeld = false
+    /// Os modificadores de um atalho apertados (no padrão, o Option).
+    private var modifiersHeld = false
 
-    private func optionChanged(_ down: Bool) {
-        optionHeld = down
+    private func modifiersChanged(_ down: Bool) {
+        modifiersHeld = down
         if transition != nil { prefetchPhotos(down) }
         if !down { returnGhosts() }  // ver `step`
     }
@@ -557,7 +588,7 @@ final class WindowManager: NSObject {
                             self.global = nil
                             if let a = self.queuedAction { self.queuedAction = nil; self.perform(a) }
                             // Option ainda apertado: a próxima tecla provavelmente é outro +/-.
-                            else if self.optionHeld { self.prefetchPhotos(true) }
+                            else if self.modifiersHeld { self.prefetchPhotos(true) }
                         }
                     }
                 }
@@ -567,7 +598,12 @@ final class WindowManager: NSObject {
 
     // MARK: - Resize fantasma (ver GhostOverlay)
 
-    private lazy var ghost: GhostOverlay? = config.resizeStyle == .ghost ? GhostOverlay(screen: NSScreen.screens[0]) : nil
+    private lazy var ghost: GhostOverlay? = {
+        guard config.resizeStyle == .ghost else { return nil }
+        let g = GhostOverlay(screen: NSScreen.screens[0])
+        g.border = (config.ghostBorderColor, config.ghostBorderWidth)
+        return g
+    }()
     /// Janelas esperando fora da tela enquanto o vidro anda no lugar delas.
     private var ghosted: Set<CGWindowID> = []
 
@@ -714,7 +750,7 @@ final class WindowManager: NSObject {
             // `optionIdle`: apertando +/- várias vezes, a fita parava entre uma tecla e outra e a página
             // aparecia pelo vidro até a tecla seguinte. Segurado só se o tap e o estado do teclado
             // concordam: na dúvida, volta.
-            let held = optionHeld && CGEventSource.flagsState(.hidSystemState).contains(.maskAlternate)
+            let held = modifiersHeld && hotkeys.modifiersHeld()
             if ghosted.isEmpty {
                 verifyPlacement(after: 0.15)  // o app teve tempo de aplicar (Electron é assíncrono)
             } else if !held {

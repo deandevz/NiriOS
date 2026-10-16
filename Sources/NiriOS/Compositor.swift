@@ -41,6 +41,8 @@ final class GhostOverlay {
     private let window: NSPanel
     private let screenHeight: Double
     private var glass: [CGWindowID: NSVisualEffectView] = [:]
+    /// Cor (nil = destaque do sistema) e espessura da borda. Vale pro próximo vidro.
+    var border: (color: NSColor?, width: Double) = (nil, 3)
 
     init(screen: NSScreen) {
         screenHeight = screen.frame.height
@@ -64,11 +66,17 @@ final class GhostOverlay {
     }
 
     private func makeGlass(_ frame: CGRect, icon: NSImage?) -> NSVisualEffectView {
+        let v = Self.glass(frame, icon: icon, border: border)
+        window.contentView!.addSubview(v)
+        return v
+    }
+
+    /// O vidro. Também é a prévia do painel de configurações, com `.withinWindow` no lugar de `.behindWindow`.
+    static func glass(_ frame: CGRect, icon: NSImage?, iconSize s: Double = 96, border: (color: NSColor?, width: Double)) -> NSVisualEffectView {
         let v = NSVisualEffectView(frame: frame)
         if let icon {
             // Margens elásticas iguais: o AppKit divide a mudança de tamanho entre elas e o ícone fica
             // no meio a cada frame, sem código nosso por tick.
-            let s = 96.0
             let i = NSImageView(frame: CGRect(x: (frame.width - s) / 2, y: (frame.height - s) / 2, width: s, height: s))
             i.image = icon
             i.imageScaling = .scaleProportionallyUpOrDown
@@ -81,9 +89,8 @@ final class GhostOverlay {
         v.wantsLayer = true
         v.layer?.cornerRadius = 16  // canto das janelas no macOS 26 (o Loop usa o mesmo)
         v.layer?.masksToBounds = true
-        v.layer?.borderWidth = 3
-        v.layer?.borderColor = NSColor.controlAccentColor.cgColor
-        window.contentView!.addSubview(v)
+        v.layer?.borderWidth = border.width
+        v.layer?.borderColor = (border.color ?? .controlAccentColor).cgColor
         return v
     }
 

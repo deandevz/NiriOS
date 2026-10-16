@@ -223,3 +223,17 @@ func endsOfStripTouchScreenEdges(center: CenterMode) {
     for _ in 0..<5 { l.resizeFocused(toPresetIn: presets, direction: -1, at: 0) }
     #expect(abs(l.columns[0].proportion - 0.333) < 0.001)
 }
+
+@Test func configReloadSlidesWithoutJumping() {
+    var l = makeLayout(3, proportion: 0.3, center: .always)
+    let before = l.frames(at: 0)
+    var c = l.config
+    c.gap = 30
+    c.stiffness = 400
+    l.setConfig(c, at: 0)
+    l.setArea(area.insetBy(dx: 18, dy: 18), bounds: bounds, at: 0)  // gap maior também encolhe a área
+    // Na hora do reload nada pula na horizontal (altura e topo mudam direto: não são animados).
+    #expect(l.frames(at: 0).map { [$0.rect.minX, $0.rect.width] } == before.map { [$0.rect.minX, $0.rect.width] })
+    let after = settle(&l)
+    for (a, b) in zip(after, after.dropFirst()) { #expect(b.rect.minX - a.rect.maxX == 30) }
+}

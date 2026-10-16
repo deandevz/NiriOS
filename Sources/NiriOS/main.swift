@@ -10,7 +10,7 @@ niri-os: tiling em fita horizontal (estilo niri) pro macOS
 Atalhos: Option + / Option -   largura da coluna focada
          Option , / Option .   foco pra coluna da esquerda / direita (também Option < > e Option ← →)
          Option F             coluna em largura total (de novo: volta)
-Config:  ~/.config/niri-os/config.json
+Config:  ~/.config/niri-os/config.json, ou pelo ícone na barra de menu. Salvar aplica na hora.
 """
 
 let argv = Array(CommandLine.arguments.dropFirst())
@@ -22,6 +22,8 @@ if args.contains("-h") || args.contains("--help") {
     print(usage)
     exit(0)
 }
+// O painel de configurações, aberto pelo ícone na barra de menu (ver `Settings`).
+if args.contains("--settings") { SettingsPanel.run() }
 
 let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
 guard AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) else {
@@ -99,4 +101,6 @@ for sig in [SIGINT, SIGTERM, SIGHUP] {
 }
 
 wm.start()
+// Teste (--pid, --script) não ganha ícone nem recarga: roda ao lado da instância de verdade.
+let settings = dev.pid == nil && dev.script.isEmpty ? Settings(wm: wm) : nil
 app.run()

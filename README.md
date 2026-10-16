@@ -7,7 +7,8 @@ Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: um wo
 1. Feche o OmniWM (o niri-os se recusa a abrir com ele rodando: os dois brigariam pelas janelas).
 2. O terminal que roda o niri-os precisa de permissão em Ajustes do Sistema > Privacidade e Segurança > Acessibilidade.
 3. `./scripts/run.sh` (ou `./scripts/run.sh -v` pra ver as medições de cada animação).
-4. `Ctrl+C` devolve todas as janelas pra dentro da tela e sai.
+4. Clique (esquerdo ou direito) no ícone da barra de menu (três colunas) abre o painel de configurações.
+5. `Ctrl+C`, ou "Sair do NiriOS" no painel, devolve todas as janelas pra dentro da tela e sai.
 
 | Atalho | Ação |
 |---|---|
@@ -15,14 +16,20 @@ Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: um wo
 | `Option ,` / `Option .` (ou `<` `>`, ou `←` `→`) | foco pra coluna da esquerda / direita, a fita rola junto |
 | `Option F` | coluna em largura total; de novo volta à largura anterior |
 
-Segurar a tecla repete (menos o `Option F`). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe.
+Segurar a tecla repete (menos o `Option F`). Janela nova entra à direita da focada com 50% da largura; nenhuma outra encolhe. Esses são os atalhos padrão; todos podem ser trocados (abaixo).
 
-Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais):
+Config opcional em `~/.config/niri-os/config.json` (todas as chaves opcionais). O painel grava nele, e salvar o arquivo à mão também aplica na hora:
 
 ```json
 { "gap": 12, "topPadding": 0, "bottomPadding": 0, "defaultColumnWidth": 0.5,
-  "widthPresets": [0.333, 0.5, 0.667, 1], "resizeStyle": "ghost", "stiffness": 800 }
+  "widthPresets": [0.333, 0.5, 0.667, 1], "resizeStyle": "ghost", "stiffness": 800,
+  "shortcuts": { "grow": ["option+=", "ctrl+option+up"], "toggleFullWidth": [] },
+  "ghostBorderColor": "#BE00F9", "ghostBorderWidth": 3 }
 ```
+
+`shortcuts`: ações `grow`, `shrink`, `focusLeft`, `focusRight`, `toggleFullWidth`. Uma ação no arquivo troca a lista inteira dela (as outras ficam no padrão); `[]` desliga. Atalho = modificadores (`ctrl`, `option`, `shift`, `cmd`) + tecla: letra, número, símbolo (`` = - , . / ; ' [ ] \ ` ``), `left` `right` `up` `down`, `space`, `return`, `tab`, `escape`, `delete`, `home` `end` `pageup` `pagedown`, `f1` a `f12`, `keypadplus` `keypadminus`, ou `key<código>`. A tecla vale pela posição (igual em US e ABNT2). Com Shift apertado e sem atalho próprio com Shift, vale o mesmo sem ele (`Option <` = `Option ,`). O mesmo atalho em duas ações: vale a primeira, com aviso. `ghostBorderColor`: `#RRGGBB`, `#RRGGBBAA` ou `accent` (cor de destaque do sistema, o padrão); `ghostBorderWidth` em pt (0 tira a borda).
+
+Ao recarregar: atalhos e borda valem na hora; `gap`, margens, `defaultColumnWidth`, `stiffness` e `centerFocusedColumn` animam as janelas pro lugar novo (nada pula); `widthPresets` e `widthStep` valem na próxima tecla; `resizeStyle` e `axTimeout` só ao reiniciar. Arquivo com JSON inválido: usa os padrões, avisa no log e no painel, e o painel não grava por cima (perderia o que foi escrito à mão).
 
 `topPadding` serve pra SketchyBar. `stiffness` maior = animação mais rápida (800 ≈ 0,35 s, igual ao niri). `widthPresets: []` volta pro passo fixo de `widthStep` (padrão 0.1). `resizeStyle` é como o `Option +/-` anima: `ghost` (padrão, vidro fosco no lugar da janela, abaixo), `photos` (fotos das janelas, abaixo; precisa da permissão de Gravação de Tela pro terminal, e sem ela vira `live`) ou `live` (as janelas reais, frame a frame).
 
@@ -122,6 +129,31 @@ Primeira versão saía com tempo fixo (100 ms de espera + fade de 200 ms): o usu
 Ícone do app no meio do vidro (96 pt, `NSRunningApplication.icon` num `NSImageView` com margens elásticas: o AppKit recentraliza quando o vidro muda de tamanho, sem código por frame). Sai junto com o vidro no fade. A/B nos painéis de teste, 8 resizes, 2 rodadas cada: pico de 15 MB contra 14 MB sem ícone, CPU e maior intervalo entre frames iguais (~16 ms).
 
 Primeira medição (2026-10-15, painéis de teste, 5 resizes seguidos): maior intervalo entre frames de 8,4 a 16,9 ms, CPU ~2,5% durante a animação (as fotos: 27 a 40%), memória 10 MB com pico de 10 MB (as fotos: 13 MB parado e ~28 MB de pico). Começa a mexer na hora da tecla, sem esperar o app. Avaliação do usuário nos apps reais: "melhorou demais, esse é o caminho"; virou o padrão no lugar das fotos.
+
+## Barra de menu e painel de configurações (2026-10-15)
+
+Ícone na barra (três colunas, a do meio maior: a fita com a focada no centro). Clique esquerdo ou direito abre o painel: atalhos (gravar um novo com `+`, remover com o x no canto da tecla, voltar ao padrão), cor e espessura da borda do vidro com prévia (o mesmo `NSVisualEffectView` do resize, sobre o papel de parede), e o arquivo (abrir, mostrar no Finder, recarregar, avisos de config inválida).
+
+Como funciona:
+
+- **O arquivo é a única fonte.** O painel grava só o que difere do padrão, mantendo as outras chaves. O niri-os vigia a pasta por FSEvents (eventos por arquivo, pega gravação atômica de editor e link simbólico de dotfiles) e recarrega quando o conteúdo muda. Sem polling. Do clique no painel até o niri-os aplicar: ~170 ms (150 ms de espera pra juntar arraste de cor, mais o FSEvents).
+- **O painel é outro processo** (`niri-os --settings`), aberto pelo ícone e encerrado quando a janela fecha. Conversa com o niri-os pelo arquivo e por linhas no stdout: `pause`/`resume` (atalhos pausados enquanto grava um novo: o tap HID pegaria a tecla antes do painel), `front <janela>`, `reload` e `quit`. Se o painel cair, o niri-os despausa sozinho.
+- **Foco do painel:** aberto por um processo de fundo, o `NSApp.activate()` do macOS 14+ recusa (o painel abria atrás do app da frente). O pedido de frente do SkyLight feito pelo próprio painel funcionou em 1 de 2 aberturas; feito pelo niri-os (o mesmo do foco da fita), em 5 de 5, e o clique com o painel aberto atrás de outro app traz ele de volta.
+
+Memória (physical footprint, modo de teste, sem apps na fita):
+
+| | niri-os | painel |
+|---|---|---|
+| sem ícone (antes) | 9,8 a 9,9 MB | |
+| ícone na barra | 11,2 a 11,4 MB (o item custa 1,4 MB; desenhado à mão porque o símbolo SF somava 0,6) | |
+| painel aberto | igual | ~50 MB, pico ~260 MB ao abrir |
+| depois de 5 aberturas | +0,1 a 0,2 MB | 0 (o processo sai) |
+
+Testado e descartado:
+- **Painel dentro do niri-os:** abrir subia de 12 pra 50 MB, com pico de 262 MB, e fechar só voltava pra 44 MB; cada abrir e fechar deixava ~5 MB a mais. Medido por partes: janela AppKit vazia +7 MB que não voltam, SwiftUI vazio +8, o `Form` +25 (e o pico de ~250), a prévia +12 (miniatura de 1000 px do papel de parede 4K: pico de +21, fica +7 a 9).
+- **Menu no ícone:** abrir um `NSMenu` uma vez custa 3,3 MB que não voltam. Clique abre o painel direto, e recarregar e sair ficaram dentro dele.
+
+Pausa dos atalhos conferida com `⌥G` (modificador de atalho, sem ação): gravando, a tecla chegou ao painel e o log `-v` do niri-os não registrou nada.
 
 ## Testar sem mexer nas suas janelas
 
