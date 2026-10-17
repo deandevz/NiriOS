@@ -1,7 +1,7 @@
 #!/bin/sh
 # Monta o NiriOS.app assinado e o zip da release em .build/dist: ./scripts/app.sh 0.1.0
 # Compila em .build/app, não em .build/release: lá pode estar o niri-os de uso rodando.
-# Assina com o certificado autoassinado "NiriOS" (README, "Distribuição"); NIRI_SIGN troca (nome ou SHA-1).
+# Assina com o certificado autoassinado "NiriOS" (docs/NOTES.md, "Distribuição"); NIRI_SIGN troca (nome ou SHA-1).
 set -eu
 VERSION=${1:?"uso: scripts/app.sh <versão, ex.: 0.1.0>"}
 IDENTITY=${NIRI_SIGN:-NiriOS}

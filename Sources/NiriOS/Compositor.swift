@@ -29,7 +29,7 @@ func overlayPanel(_ screen: NSScreen) -> NSPanel {
 /// app termina de redesenhar. Nenhuma foto aparece na tela (as capturas só dizem quando o app terminou),
 /// e o app redesenha escondido (piscada, sombra e imagem velha do WezTerm ficam atrás do vidro).
 /// A própria janela não dá pra deixar transparente:
-/// `SLSSetWindowAlpha` em janela de outro app não tem efeito (README, SkyLight).
+/// `SLSSetWindowAlpha` em janela de outro app não tem efeito (docs/NOTES.md, SkyLight).
 final class GhostOverlay {
     /// Depois que a janela volta: espera máxima pelo app terminar de desenhar (vídeo tocando nunca
     /// termina), vidro parado depois que ele terminou e duração do fade (s). Com 0,2 s e começo rápido,
@@ -174,7 +174,7 @@ final class Glass: NSView {
 /// A janela que muda de tamanho aparece já no layout novo (o app redimensionado, fotografado ao vivo
 /// por baixo), sempre em tamanho real, presa à esquerda: crescendo, a borda direita revela; encolhendo,
 /// a sobra à direita tem a cor da borda do app e fecha. Nada estica e nada se mistura. Testado e
-/// descartado (ver README): esticar (texto deforma), fundir velha e nova (fantasma), trocar no meio
+/// descartado (ver docs/NOTES.md): esticar (texto deforma), fundir velha e nova (fantasma), trocar no meio
 /// esticando (com passos de 1/3 a imagem do meio fica muito esticada), dissolver no fim (fantasma
 /// parado).
 final class TransitionOverlay {

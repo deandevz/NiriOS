@@ -13,7 +13,7 @@ import QuartzCore
 /// `SLSMoveWindow` deu o mesmo; com o AppKit (`setFrameOrigin`), metade dos frames 1 frame atrás. A camada também
 /// muda de tamanho e aparece na mesma transação, então trocar de janela não mostra 1 frame com o tamanho velho. Nada
 /// roda por frame do nosso lado e nada é lido do app. Prender uma janela nossa à do app pelo grupo de movimento do
-/// WindowServer não funciona (README, "Borda").
+/// WindowServer não funciona (docs/NOTES.md, "Borda").
 final class FocusBorder {
     private let panel: NSPanel
     private let ring = CALayer()

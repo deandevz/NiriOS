@@ -1,3 +1,8 @@
 .build/
 .swiftpm/
 .DS_Store
+
+# Notas pessoais e instruções do Claude: só na máquina do autor
+CLAUDE.MD
+CLAUDE.md
+PROJECT.MD

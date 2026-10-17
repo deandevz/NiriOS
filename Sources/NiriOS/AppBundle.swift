@@ -1,7 +1,7 @@
 import AppKit
 import ServiceManagement
 
-/// O que muda quando o niri-os roda como NiriOS.app (ver README, "Distribuição"). De `.build/release/niri-os`
+/// O que muda quando o niri-os roda como NiriOS.app (ver docs/NOTES.md, "Distribuição"). De `.build/release/niri-os`
 /// (desenvolvimento) não tem versão: sem update, sem abrir ao iniciar, sem tour, e o log fica no terminal.
 enum AppBundle {
     static let isApp = Bundle.main.bundleURL.pathExtension == "app"
