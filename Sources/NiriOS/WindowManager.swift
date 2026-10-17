@@ -1181,11 +1181,49 @@ final class WindowManager: NSObject {
     private func verifyPlacement(after wait: Double) {
         DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
             guard let self, self.link?.isPaused == true else { return }
+            if self.dropClosed() { return }  // a fita anda pra fechar o buraco; a conferência vem quando ela parar
             if self.border?.refresh() == true, self.verbose { log("borda: fora do lugar na conferência (aviso do WindowServer perdido?)") }
             for w in self.workers.values {
                 w.verifyPlacement { [weak self] fixed, minSizes in self?.verified(w, fixed, minSizes) }
             }
         }
+    }
+
+    /// Coluna vazia na fita, visto no uso em 2026-10-17: uma janela fechada no workspace 3 que nem reler os apps tirava,
+    /// de causa ainda não achada. No fim de cada animação, sem falar com os apps (~0,1 ms por janela):
+    /// - fora do `tracked`, de app sem worker ou que não existe mais no WindowServer: sai da fita, com o motivo no log
+    ///   (nenhum caminho põe na fita janela fora do `tracked`; sem ele, ninguém mexe nela nem tira ela);
+    /// - fora da tela e não em outro Space (o da tela ou nenhum): relê o app uma vez, como no aviso de que ela saiu, e o
+    ///   `sync` decide (o Electron segura a janela fechada viva, fora da tela, até o app sair; medido 8 s).
+    /// Devolve true se tirou alguma.
+    private func dropClosed() -> Bool {
+        let all = workspaces.windows
+        let stray = Dictionary(all.compactMap { id -> (CGWindowID, String)? in
+            guard let t = tracked[id] else { return (id, "fora do tracked") }
+            guard let w = workers[t.pid] else { return (id, "pid \(t.pid) sem worker") }
+            return Private.exists(id) ? nil : (id, "\(w.name), não existe no WindowServer")
+        }, uniquingKeysWith: { a, _ in a })
+        for id in all where stray[id] == nil && !orderedOut.contains(id) && !Private.isOrderedIn(id)
+            && (Private.isOnActiveSpace(id) || !Private.isOnAnySpace(id)) {
+            orderedOut.insert(id)
+            workers[tracked[id]!.pid]?.requestScan()
+        }
+        guard !stray.isEmpty else { return false }
+        let wasFocused = layout.focusedWindow, now = CACurrentMediaTime()
+        withGlass(at: now) {
+            for (id, reason) in stray {
+                let k = workspaces.index(of: id)
+                log("janela \(id) estava na fita do workspace \(k.map { workspaces.names[$0] } ?? "?") (\(reason)): saiu")
+                if k == workspaces.active { lastVanish = now }
+                if let t = tracked[id] { workers[t.pid]?.forget(id) }
+                tracked[id] = nil
+                orderedOut.remove(id)
+                while workspaces.remove(id, at: now) != nil {}  // se estiver duas vezes na fita, as duas saem
+            }
+        }
+        if let f = layout.focusedWindow, f != wasFocused { deferFocus(f) }
+        animate()
+        return true
     }
 
     /// Largura e altura mínimas só valem com duas leituras iguais, a 2ª 0,6 s depois. Uma leitura só pegava app

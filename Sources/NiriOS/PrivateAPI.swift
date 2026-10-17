@@ -42,6 +42,14 @@ enum Private {
         return (spaces as? [NSNumber])?.isEmpty == false
     }
 
+    /// A janela ainda existe no WindowServer, em qualquer Space, na tela ou não. Fechada de vez, o `SLSGetWindowBounds`
+    /// falha e ela não está em Space nenhum (medido em 2026-10-17 com a janela que ficou na fita). Sem as funções, existe.
+    static func exists(_ window: CGWindowID) -> Bool {
+        guard let mainConnection, let getBounds, spacesForWindows != nil else { return true }
+        var r = CGRect.zero
+        return getBounds(mainConnection(), window, &r) == 0 || isOnAnySpace(window)
+    }
+
     private typealias ActiveSpaceFn = @convention(c) (Int32) -> UInt64
     private static let activeSpace = symbol("SLSGetActiveSpace", in: skyLight, as: ActiveSpaceFn.self)
 
