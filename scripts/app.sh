@@ -23,8 +23,8 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONS" -o "$APP/Contents/Resources/AppIcon.icns"
 
-# LSUIElement: sem Dock e sem menu (o tour se põe no Dock enquanto está aberto). macOS 26: as APIs privadas só foram
-# medidas nele.
+# LSUIElement: sem Dock e sem menu (o tour se põe no Dock enquanto está aberto). macOS 15: as APIs privadas foram
+# medidas no 26; as que faltarem no 15 viram log e o recurso fica sem elas (PrivateAPI.swift).
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -41,7 +41,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
-    <key>LSMinimumSystemVersion</key><string>26.0</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
