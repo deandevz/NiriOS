@@ -47,6 +47,10 @@ As janelas ficam em colunas numa fita horizontal sem fim. Abrir uma janela nunca
 
 `⌥ S` congela a tela no momento da tecla, então menu aberto e efeito de passar o mouse ficam no print. Arraste pra escolher a área e desenhe com caneta, linha, seta, retângulo ou marca-texto, escreva, ou pixele o que não deve aparecer. `⌘ C` ou `↩` copia, `⌘ S` salva na pasta de prints do macOS (ou em `screenshotFolder`), `Esc` cancela e `⌘ Z` desfaz. A rolagem do mouse muda a espessura, o Shift deixa linha em 45° e retângulo quadrado, e cada ferramenta tem uma letra (aparece na dica do botão).
 
+<p align="center">
+  <img src="docs/media/screenshot.gif" width="840" alt="Congelando a tela com ⌥ S, escolhendo a área, pixelando um código de reserva, marcando uma linha, pondo seta e texto e colando o print numa nota">
+</p>
+
 ## Com a sua cara
 
 ### Papel de parede animado

@@ -47,6 +47,10 @@ Windows live in columns on an endless horizontal strip. Opening a window never s
 
 `⌥ S` freezes the screen at the moment you press it, so menus and hover states stay in the shot. Drag to pick an area, then draw with the pen, line, arrow, rectangle or highlighter, type text, or pixelate what shouldn't be seen. `⌘ C` or `↩` copies, `⌘ S` saves to your macOS screenshot folder (or `screenshotFolder`), `Esc` cancels and `⌘ Z` undoes. The scroll wheel changes the stroke size, Shift keeps lines at 45° and rectangles square, and each tool has a letter key (shown in its tooltip).
 
+<p align="center">
+  <img src="docs/media/screenshot.gif" width="840" alt="Freezing the screen with ⌥ S, picking an area, pixelating a booking code, highlighting a line, adding an arrow and a label, then pasting the shot into a note">
+</p>
+
 ## Make it yours
 
 ### Animated wallpapers
