@@ -7,5 +7,5 @@ import Testing
     #expect(!Feature.border.isOn([.border]))
     // Religar a fita traz a borda de volta, se ela não foi desligada por conta própria.
     #expect(Feature.border.isOn([.clipboard]))
-    #expect(Feature.clipboard.isOn([.tiling]) && Feature.wallpaper.isOn([.tiling]))
+    #expect(Feature.clipboard.isOn([.tiling]) && Feature.screenshot.isOn([.tiling]) && Feature.wallpaper.isOn([.tiling]))
 }

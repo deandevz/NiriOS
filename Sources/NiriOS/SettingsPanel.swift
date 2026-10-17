@@ -37,7 +37,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.load(Config.load())
         refreshPreview()
         tabs.tabStyle = .toolbar
-        tabs.addTabViewItem(tab("Recursos", "switch.2", height: 340, FeaturesTab(panel: self)))
+        tabs.addTabViewItem(tab("Recursos", "switch.2", height: 420, FeaturesTab(panel: self)))
         tabs.addTabViewItem(tab("Atalhos", "keyboard", height: 290, ShortcutsTab(panel: self)))
         tabs.addTabViewItem(tab("Workspaces", "rectangle.split.3x1", height: 470, WorkspacesTab(panel: self)))
         tabs.addTabViewItem(tab("Papel de parede", "photo", height: 520, WallpaperTab(panel: self)))
@@ -123,6 +123,7 @@ final class PanelController: NSObject, NSWindowDelegate {
                            "ghostBorderColor": nil, "ghostBorderWidth": nil,  // os nomes de antes
                            "wallpaper": m.wallpaper.map { ($0.path as NSString).abbreviatingWithTildeInPath },
                            "wallpaperEffect": m.effect == .none ? nil : m.effect.rawValue,
+                           "screenshotFolder": m.screenshotFolder.map { ($0.path as NSString).abbreviatingWithTildeInPath },
                            "features": m.disabled.isEmpty ? nil : Dictionary(uniqueKeysWithValues: m.disabled.map { ($0.rawValue, false) })]) else {
             m.saveError = "Não salvei: o config.json não é um JSON válido. Corrija ou apague o arquivo."
             return
@@ -333,6 +334,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         scheduleSave()
     }
 
+    func chooseScreenshotFolder() {
+        guard let window else { return }
+        let p = NSOpenPanel()
+        p.canChooseFiles = false
+        p.canChooseDirectories = true
+        p.canCreateDirectories = true
+        p.directoryURL = model.screenshots
+        p.beginSheetModal(for: window) { [weak self] r in
+            if r == .OK, let url = p.url { self?.setScreenshotFolder(url) }
+        }
+    }
+
+    func setScreenshotFolder(_ url: URL?) {
+        model.screenshotFolder = url
+        scheduleSave()
+    }
+
     func setOpensAtLogin(_ on: Bool) {
         AppBundle.setOpensAtLogin(on)
         model.loginItem = AppBundle.loginItem
@@ -384,6 +402,7 @@ struct AppRef {
     var effect = WallpaperEffect.none
     var preview: CGImage?
     var disabled: Set<Feature> = []
+    var screenshotFolder: URL?
     /// Abrir ao iniciar o Mac: o estado é do macOS (ver `AppBundle.loginItem`).
     var loginItem = AppBundle.isApp ? AppBundle.loginItem : .notRegistered
     func has(_ f: Feature) -> Bool { f.isOn(disabled) }
@@ -409,6 +428,14 @@ struct AppRef {
         wallpaper = c.wallpaper
         effect = c.wallpaperEffect
         disabled = c.disabled
+        screenshotFolder = c.screenshotFolder
+    }
+
+    /// A pasta do print como o niri-os usa (ver `Config.screenshots`).
+    var screenshots: URL {
+        var c = Config()
+        c.screenshotFolder = screenshotFolder
+        return c.screenshots
     }
 }
 
@@ -430,6 +457,7 @@ extension Action {
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
         case .clipboard: "Histórico do que foi copiado"
+        case .screenshot: "Print de uma área da tela"
         case .workspace: "Ir pro workspace"
         case .moveToWorkspace: "Mandar a janela focada"
         }
@@ -442,6 +470,7 @@ extension Feature {
         case .tiling: "Fita de janelas"
         case .border: "Borda da janela focada"
         case .clipboard: "Histórico do clipboard"
+        case .screenshot: "Print"
         case .wallpaper: "Papel de parede do NiriOS"
         }
     }
@@ -451,6 +480,7 @@ extension Feature {
         case .tiling: "As janelas em colunas lado a lado, com os workspaces e os atalhos de foco, largura e mesa. Mudar reinicia o NiriOS; desligada, as janelas voltam pra tela em cascata."
         case .border: "Contorno na janela com o teclado e no vidro do resize. Precisa da fita."
         case .clipboard: "O atalho mostra o que foi copiado. Desligado, o atalho volta pro app e o histórico fica guardado."
+        case .screenshot: "O atalho congela a tela: escolha a área, desenhe, escreva, pixele, e copie ou salve. Precisa da Gravação de Tela."
         case .wallpaper: "Imagem com efeito ou vídeo. Desligado, volta o papel de parede do macOS e o arquivo fica guardado."
         }
     }
@@ -508,9 +538,30 @@ private struct FeaturesTab: View {
                     }
                     .accessibilityLabel(f.title)  // sem isso o botão não tem nome (o texto fica num elemento ao lado)
                     .disabled(f.requires.map { !panel.model.has($0) } ?? false)  // a borda sem a fita
+                    if f == .screenshot { ScreenshotFolderRow(panel: panel).disabled(!panel.model.has(.screenshot)) }
                 }
             } footer: {
                 Text("Desligado não roda nada nem gasta memória.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Onde o ⌘S do print salva. Sem escolha, a pasta do print do macOS, que muda junto com ela.
+private struct ScreenshotFolderRow: View {
+    let panel: PanelController
+
+    var body: some View {
+        let m = panel.model
+        LabeledContent("Pasta do ⌘S") {
+            HStack(spacing: 8) {
+                Text((m.screenshots.path as NSString).abbreviatingWithTildeInPath + (m.screenshotFolder == nil ? " (a do macOS)" : ""))
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Button("Escolher…") { panel.chooseScreenshotFolder() }
+                if m.screenshotFolder != nil {
+                    Button { panel.setScreenshotFolder(nil) } label: { Image(systemName: "arrow.uturn.backward.circle") }
+                        .buttonStyle(.borderless).help("Voltar pra pasta do print do macOS")
+                }
             }
         }
     }
@@ -806,7 +857,7 @@ private struct ShortcutRow: View {
             }
             .foregroundStyle(.secondary)
         }
-        .disabled(!model.has(action == .clipboard ? .clipboard : .tiling))
+        .disabled(!model.has(action.feature))
         .onDisappear { if recording { panel.record(nil) } }  // trocou de aba ou de workspace gravando
     }
 }

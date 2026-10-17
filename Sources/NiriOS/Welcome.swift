@@ -211,7 +211,7 @@ private struct PermissionsPage: View {
                        detail: "É como o NiriOS move as janelas e recebe os atalhos. Sem ela, ele não abre.",
                        action: c.askAccessibility)
             Permission(icon: "rectangle.dashed.badge.record", title: "Gravação de Tela", required: false, ok: m.screen,
-                       detail: "Pra saber quando o app terminou de redesenhar depois do resize e medir o canto das janelas pra borda. Só as janelas que o NiriOS está mexendo; nada é gravado nem sai do Mac.",
+                       detail: "Pro print do ⌥ S, pra saber quando o app terminou de redesenhar depois do resize e pra medir o canto das janelas pra borda. Nada é gravado nem sai do Mac.",
                        action: c.askScreen)
             Text("Depois de liberar a Gravação de Tela, o macOS pede pra reabrir o NiriOS: pode aceitar, ele volta nesta tela. Se o NiriOS já aparece ligado na lista e continua pedindo, tire ele com o botão − e libere de novo.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -262,6 +262,7 @@ private struct FeaturesPage: View {
             feature(.border, "Contorno na janela com o teclado. Precisa da fita.")
                 .disabled(!m.on.contains(.tiling))
             feature(.clipboard, "⌥ V mostra os últimos 25 textos e imagens copiados. Fica só no seu Mac.")
+            feature(.screenshot, "⌥ S congela a tela: escolha a área, desenhe, escreva ou pixele, e copie (⌘C) ou salve (⌘S). Precisa da Gravação de Tela.")
             Text("Dá pra mudar depois, na aba Recursos das configurações. O papel de parede também fica lá.")
                 .font(.callout).foregroundStyle(.secondary)
         }
@@ -296,6 +297,7 @@ private struct ShortcutsPage: View {
             ([.toggleDesktop], "", "mostra a mesa; de novo, as janelas voltam"),
             ([.workspace("1"), .workspace("4")], "…", "vai pro workspace 1 a 4; com ⇧, manda a janela focada"),
             ([.clipboard], "", "histórico do que foi copiado"),
+            ([.screenshot], "", "print de uma área da tela, com caneta, seta, texto e pixelar"),
         ]
         VStack(alignment: .leading, spacing: 12) {
             Title(text: "Atalhos")

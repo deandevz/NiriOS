@@ -142,26 +142,27 @@ final class ClipboardPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         CATransaction.commit()
     }
 
-    /// Vidro do Tahoe; antes dele, o desfoque do vidro do resize.
-    private static func glass(around content: NSView) -> NSView {
+    /// Vidro do Tahoe; antes dele, o desfoque do vidro do resize. `blending`: `.withinWindow` desfoca o que a própria
+    /// janela desenha embaixo (a foto congelada do print, ver `ScreenshotEditor`).
+    static func glass(around content: NSView, radius: CGFloat = 22, blending: NSVisualEffectView.BlendingMode = .behindWindow) -> NSView {
         if #available(macOS 26, *) {
             let g = NSGlassEffectView(frame: content.frame)
             g.wantsLayer = true
-            g.cornerRadius = 22
+            g.cornerRadius = radius
             g.contentView = content
             // Recortado nos cantos: o vidro é desenhado pelo servidor de janelas, e sem isso a sombra da janela saía do
             // retângulo inteiro, uma linha quadrada em volta dos cantos arredondados.
-            g.layer?.cornerRadius = 22
+            g.layer?.cornerRadius = radius
             g.layer?.cornerCurve = .continuous
             g.layer?.masksToBounds = true
             return g
         }
         let v = NSVisualEffectView(frame: content.frame)
         v.material = .hudWindow
-        v.blendingMode = .behindWindow
+        v.blendingMode = blending
         v.state = .active
         v.wantsLayer = true
-        v.layer?.cornerRadius = 22
+        v.layer?.cornerRadius = radius
         v.layer?.cornerCurve = .continuous
         v.layer?.masksToBounds = true
         v.addSubview(content)

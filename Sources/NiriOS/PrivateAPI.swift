@@ -174,6 +174,13 @@ enum Private {
         listImage?(rect, 8, window, 1 | 8)?.takeRetainedValue()
     }
 
+    /// `rect` da tela inteira como ela está, em resolução Retina, sem o cursor. ~15 ms numa tela de 3456x2234 px, mais
+    /// ~25 ms na primeira leitura dos pixels (a foto vem sem copiar).
+    static func captureScreen(_ rect: CGRect) -> CGImage? {
+        // kCGWindowListOptionOnScreenOnly, todas as janelas
+        listImage?(rect, 1, kCGNullWindowID, 0)?.takeRetainedValue()
+    }
+
     private typealias ArrayImageFn = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
     private static let arrayImage = symbol("CGWindowListCreateImageFromArray", in: defaultHandle, as: ArrayImageFn.self)
 

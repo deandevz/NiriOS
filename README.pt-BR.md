@@ -43,6 +43,10 @@ As janelas ficam em colunas numa fita horizontal sem fim. Abrir uma janela nunca
   <img src="docs/media/clipboard.gif" width="560" alt="Abrindo o histórico do clipboard, filtrando, colando um texto e uma imagem">
 </p>
 
+### Print
+
+`⌥ S` congela a tela no momento da tecla, então menu aberto e efeito de passar o mouse ficam no print. Arraste pra escolher a área e desenhe com caneta, linha, seta, retângulo ou marca-texto, escreva, ou pixele o que não deve aparecer. `⌘ C` ou `↩` copia, `⌘ S` salva na pasta de prints do macOS (ou em `screenshotFolder`), `Esc` cancela e `⌘ Z` desfaz. A rolagem do mouse muda a espessura, o Shift deixa linha em 45° e retângulo quadrado, e cada ferramenta tem uma letra (aparece na dica do botão).
+
 ## Com a sua cara
 
 ### Papel de parede animado
@@ -82,7 +86,7 @@ Uma ferramenta que fica aberta o dia todo tem que custar quase nada. No NiriOS i
 
 - **Parado é parado.** Sem polling, sem timer, sem display link quando nada se mexe: 0% de CPU.
 - **Desligado não existe.** Recurso desligado não tem janela, monitor de eventos nem memória no NiriOS, e o atalho dele volta para os seus apps.
-- **Trabalho pesado roda fora.** O painel, a leitura do clipboard, o papel de parede e o update são processos separados que saem quando terminam, então a memória deles nunca fica para trás.
+- **Trabalho pesado roda fora.** O painel, a leitura do clipboard, o editor do print, o papel de parede e o update são processos separados que saem quando terminam, então a memória deles nunca fica para trás.
 - **A memória não cresce.** O estado de uma janela some com a janela. Ligando e desligando recursos 60 vezes seguidas, a memória estabilizou nas primeiras vezes e ficou ali.
 - **Estabilidade vem antes de recurso.** Glitch, janela fora do lugar ou leitura de Acessibilidade a mais é bug, mesmo que o recurso funcione. Mudança que piore os números abaixo precisa de justificativa.
 
@@ -91,6 +95,7 @@ Uma ferramenta que fica aberta o dia todo tem que custar quase nada. No NiriOS i
 | NiriOS parado | 10 a 12 MB, 0% de CPU |
 | Borda de foco | +0,2 a 0,5 MB |
 | Histórico do clipboard | +0,2 a 0,4 MB (uma imagem de 30 MB é lida em outro processo e nunca entra no NiriOS) |
+| Print | a foto sai do NiriOS assim que é tirada (10 MB antes e depois); o editor tem 17 a 22 MB, num processo próprio |
 | Resize fantasma, durante a animação | ~2,5% de CPU |
 | Papel de parede em vídeo, 4K a 60 fps | 32 MB e 3% de CPU, num processo próprio |
 
@@ -156,6 +161,7 @@ O terminal que roda o NiriOS precisa da permissão de Acessibilidade. `Ctrl+C` d
 | `⌥ ⇧ 1` a `⌥ ⇧ 4` | Manda a janela focada para um workspace |
 | `⌥ D` | Mostra a mesa; de novo as janelas voltam |
 | `⌥ V` | Histórico do clipboard |
+| `⌥ S` | Print de uma área, com ferramentas de desenho |
 
 A tecla vale pela posição no teclado, então fica no mesmo lugar em qualquer layout (US, ABNT2). Todo atalho pode ser trocado.
 
@@ -194,16 +200,17 @@ Clique no ícone da barra de menu para abrir o painel, ou edite `~/.config/niri-
 | `workspaces` | `1` a `4` | Na ordem da tela; cada um pode ter `apps`, `open` (app que abre quando ele está vazio), `key` e `moveKey` |
 | `onWorkspaceChange` | nenhum | Comando de shell rodado a cada troca, com o nome em `$NIRI_WORKSPACE` |
 | `wallpaper`, `wallpaperEffect` | nenhum | Imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); efeitos de imagem `dither`, `halftone`, `scanlines`, `ascii` |
+| `screenshotFolder` | a pasta de prints do macOS | Onde o `⌘ S` salva o print |
 | `shortcuts` | | Uma lista por ação; `[]` desliga |
-| `features` | tudo ligado | `tiling`, `border`, `clipboard`, `wallpaper`; `false` desliga |
+| `features` | tudo ligado | `tiling`, `border`, `clipboard`, `screenshot`, `wallpaper`; `false` desliga |
 
-Atalho é modificador (`ctrl`, `option`, `shift`, `cmd`) mais tecla, como `"option+shift+left"`. Ações: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop` e `clipboard`. Para workspaces clicáveis numa barra, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <nome>` troca pela linha de comando.
+Atalho é modificador (`ctrl`, `option`, `shift`, `cmd`) mais tecla, como `"option+shift+left"`. Ações: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `clipboard` e `screenshot`. Para workspaces clicáveis numa barra, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <nome>` troca pela linha de comando.
 
 ## Limitações
 
 O NiriOS é novo. Espere arestas, e abra uma issue quando achar uma.
 
-- Só a tela principal é gerenciada.
+- Só a tela principal é gerenciada. O print é da tela onde está o mouse.
 - Ainda não tem janela flutuante: toda janela comum entra na fita.
 - Diálogos e sheets flutuam, mas ainda não ficam centralizados sobre a janela dona.
 - App com largura mínima maior que a coluna invade a vizinha.

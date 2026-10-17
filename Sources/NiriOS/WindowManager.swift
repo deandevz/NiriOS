@@ -72,6 +72,8 @@ final class WindowManager: NSObject {
     private var clipboardAllowed: Bool {
         dev.pid == nil && dev.script.isEmpty || ProcessInfo.processInfo.environment["NIRI_CLIPBOARD"] != nil
     }
+    /// O print do Option+S (ver `Screenshot`).
+    private var screenshot: Screenshot?
     /// `niri-os --workspace <nome>` (o clique na SketchyBar, por exemplo) chega por aqui.
     static let workspaceRequest = Notification.Name("niri-os.workspace")
 
@@ -220,7 +222,8 @@ final class WindowManager: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.finishStartup() }
     }
 
-    /// Cria ou tira a borda e o histórico do clipboard, e aplica o estilo da borda. Tirar fecha a janela e o monitor deles.
+    /// Cria ou tira a borda, o histórico do clipboard e o print, e aplica o estilo da borda. Tirar fecha a janela e o
+    /// monitor deles.
     private func applyFeatures() {
         if config.has(.border) != (border != nil) {
             if config.has(.border) {
@@ -235,6 +238,12 @@ final class WindowManager: NSObject {
         border?.style = (config.borderColor, config.borderWidth)
         ghost?.border = (config.borderColor, config.borderWidth)
         if clipboardAllowed, config.has(.clipboard) != (clipboard != nil) { clipboard = config.has(.clipboard) ? Clipboard() : nil }
+        if config.has(.screenshot) != (screenshot != nil) {
+            screenshot?.close()
+            screenshot = config.has(.screenshot) ? Screenshot(folder: config.screenshots, verbose: verbose) : nil
+            screenshot?.onOpen = { [weak self] open in self?.hotkeys.solo = open ? .screenshot : nil }
+        }
+        screenshot?.folder = config.screenshots
     }
 
     private func addApp(_ app: NSRunningApplication) {
@@ -562,6 +571,8 @@ final class WindowManager: NSObject {
         // O histórico não mexe na fita: abre na hora, mesmo no meio de uma transição ou com a mesa à mostra.
         if action == .clipboard { return clipboard?.toggle() ?? () }
         clipboard?.close()
+        // O print também: a foto é da tela como está, até no meio de uma animação.
+        if action == .screenshot { return screenshot?.toggle() ?? () }
         guard global == nil else { queuedAction = action; return }  // roda quando a transição acabar
         let now = CACurrentMediaTime()
         if case .workspace(let name) = action, let k = workspaces.index(named: name) {
@@ -627,7 +638,7 @@ final class WindowManager: NSObject {
             withGlass(at: now) { workspaces.move(id, to: k, at: now) }  // empilhada, as da coluna crescem
             if verbose { log("ação \(action): janela \(id) foi pro workspace \(name)") }
             if let f = layout.focusedWindow { deferFocus(f) }
-        case .toggleDesktop, .workspace, .clipboard: break
+        case .toggleDesktop, .workspace, .clipboard, .screenshot: break
         }
         animate()
     }

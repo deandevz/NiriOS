@@ -69,6 +69,8 @@ struct Config {
     /// Comando (sh) rodado a cada troca de workspace e ao abrir, com o nome em NIRI_WORKSPACE. Pra SketchyBar:
     /// `sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE`.
     var onWorkspaceChange: String?
+    /// Onde o ⌘S do print salva (ver `ScreenshotEditor`). nil = a pasta do print do macOS.
+    var screenshotFolder: URL?
     /// Os recursos desligados (ver `Feature`): `"features": { "clipboard": false }`.
     var disabled: Set<Feature> = []
     /// O que estava errado no arquivo (aparece no log e no painel).
@@ -88,7 +90,7 @@ struct Config {
         .focusUp: ["option+up"], .focusDown: ["option+down"],
         .moveColumnLeft: ["option+shift+,", "option+shift+left"], .moveColumnRight: ["option+shift+.", "option+shift+right"],
         .consumeOrExpelLeft: ["option+cmd+,"], .consumeOrExpelRight: ["option+cmd+."],
-        .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"], .clipboard: ["option+v"],
+        .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"], .clipboard: ["option+v"], .screenshot: ["option+s"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
     /// O padrão de uma ação. Workspace: Option+<nome> pra ir e Option+Shift+<nome> pra mandar a janela, se o
@@ -193,6 +195,9 @@ struct Config {
             warn("wallpaperEffect vale só pra imagem; o vídeo toca sem efeito")
             c.wallpaperEffect = .none
         }
+        if let s = obj["screenshotFolder"] as? String, !s.isEmpty {
+            c.screenshotFolder = URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        }
         for (name, on) in obj["features"] as? [String: Any] ?? [:] {
             guard let f = Feature(rawValue: name) else { warn("recurso desconhecido em features: '\(name)'"); continue }
             guard let on = on as? Bool else { warn("features.\(name) precisa ser true ou false"); continue }
@@ -200,7 +205,7 @@ struct Config {
         }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "heightPresets", "resizeStyle", "stiffness", "axTimeout",
                           "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange",
-                          "features"]
+                          "screenshotFolder", "features"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         if data != nil { log("config carregada de \(path.path)") }
         return c
@@ -223,14 +228,19 @@ struct Config {
 
     func has(_ f: Feature) -> Bool { f.isOn(disabled) }
 
+    /// A pasta do print: a do config, ou a do print do macOS (`defaults write com.apple.screencapture location`), ou a Mesa.
+    var screenshots: URL {
+        screenshotFolder ?? URL(fileURLWithPath: ((UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "location")
+            ?? "~/Desktop") as NSString).expandingTildeInPath)
+    }
+
     /// O que o niri-os usa: sem a borda (nem no vidro do resize), o papel de parede e o atalho de recurso desligado. O
     /// painel fica com o config inteiro, pra religar voltar como estava.
     var active: Config {
         var c = self
-        if !has(.tiling) { c.shortcuts = c.shortcuts.filter { $0.key == .clipboard } }
+        c.shortcuts = c.shortcuts.filter { has($0.key.feature) }
         if !has(.border) { c.borderWidth = 0 }
         if !has(.wallpaper) { (c.wallpaper, c.wallpaperEffect) = (nil, .none) }  // o processo devolve o do macOS
-        if !has(.clipboard) { c.shortcuts[.clipboard] = [] }
         return c
     }
 

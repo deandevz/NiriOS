@@ -43,6 +43,10 @@ Windows live in columns on an endless horizontal strip. Opening a window never s
   <img src="docs/media/clipboard.gif" width="560" alt="Opening the clipboard history, filtering it, pasting text and an image">
 </p>
 
+### Screenshots
+
+`⌥ S` freezes the screen at the moment you press it, so menus and hover states stay in the shot. Drag to pick an area, then draw with the pen, line, arrow, rectangle or highlighter, type text, or pixelate what shouldn't be seen. `⌘ C` or `↩` copies, `⌘ S` saves to your macOS screenshot folder (or `screenshotFolder`), `Esc` cancels and `⌘ Z` undoes. The scroll wheel changes the stroke size, Shift keeps lines at 45° and rectangles square, and each tool has a letter key (shown in its tooltip).
+
 ## Make it yours
 
 ### Animated wallpapers
@@ -82,7 +86,7 @@ A tool you run all day has to cost close to nothing. These are rules in NiriOS, 
 
 - **Idle means idle.** No polling, no timers, no display link while nothing moves: 0% CPU.
 - **Off means gone.** A feature you turn off has no window, no event monitor and no memory in NiriOS, and its shortcut goes back to your apps.
-- **Heavy work runs elsewhere.** The settings panel, the clipboard reader, wallpapers and the updater are separate processes that exit when they're done, so their memory never stays behind.
+- **Heavy work runs elsewhere.** The settings panel, the clipboard reader, the screenshot editor, wallpapers and the updater are separate processes that exit when they're done, so their memory never stays behind.
 - **Memory doesn't grow.** State for a window disappears with the window. After turning features on and off 60 times in a row, memory settled within the first few toggles and stayed there.
 - **Stability beats features.** A glitch, a window out of place or an extra Accessibility read is a bug, even if the feature works. A change that makes the numbers below worse needs a reason.
 
@@ -91,6 +95,7 @@ A tool you run all day has to cost close to nothing. These are rules in NiriOS, 
 | NiriOS, idle | 10 to 12 MB, 0% CPU |
 | Focus border | +0.2 to 0.5 MB |
 | Clipboard history | +0.2 to 0.4 MB (a 30 MB image is read in another process and never enters NiriOS) |
+| Screenshot | the photo leaves NiriOS as it's taken (10 MB before and after); the editor is 17 to 22 MB, in its own process |
 | Ghost resize, during the animation | ~2.5% CPU |
 | Video wallpaper, 4K at 60 fps | 32 MB and 3% CPU, in its own process |
 
@@ -156,6 +161,7 @@ The terminal you run it from needs Accessibility permission. `Ctrl+C` brings eve
 | `⌥ ⇧ 1` to `⌥ ⇧ 4` | Send the focused window to a workspace |
 | `⌥ D` | Show the desktop; press again to bring the windows back |
 | `⌥ V` | Clipboard history |
+| `⌥ S` | Screenshot of an area, with drawing tools |
 
 Keys match by physical position, so they sit in the same place on any keyboard layout. Every shortcut can be changed.
 
@@ -194,16 +200,17 @@ Click the menu bar icon to open the settings panel, or edit `~/.config/niri-os/c
 | `workspaces` | `1` to `4` | In screen order; each can set `apps`, `open` (app to launch when empty), `key` and `moveKey` |
 | `onWorkspaceChange` | none | Shell command run on every switch, with the name in `$NIRI_WORKSPACE` |
 | `wallpaper`, `wallpaperEffect` | none | Image or video (`.mp4`, `.mov`, `.m4v`); image effects `dither`, `halftone`, `scanlines`, `ascii` |
+| `screenshotFolder` | the macOS screenshot folder | Where `⌘ S` saves a screenshot |
 | `shortcuts` | | A list per action; `[]` disables it |
-| `features` | all on | `tiling`, `border`, `clipboard`, `wallpaper`; `false` turns one off |
+| `features` | all on | `tiling`, `border`, `clipboard`, `screenshot`, `wallpaper`; `false` turns one off |
 
-Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop` and `clipboard`. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
+Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `clipboard` and `screenshot`. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
 
 ## Limitations
 
 NiriOS is young. Expect rough edges, and please open an issue when you hit one.
 
-- Only the main display is managed.
+- Only the main display is managed. Screenshots cover the display under the mouse.
 - No floating windows yet: every regular window joins the strip.
 - Dialogs and sheets float, but aren't centered over their parent window yet.
 - An app whose minimum width is wider than its column overlaps the neighbor.

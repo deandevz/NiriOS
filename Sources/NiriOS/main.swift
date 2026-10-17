@@ -18,6 +18,7 @@ Atalhos: Option + / Option -   largura da coluna focada
          Option F             coluna em largura total (de novo: volta)
          Option D             mostra a mesa: as janelas saem pelas bordas (de novo: voltam)
          Option V             histórico do que foi copiado: clique cola, o alfinete fixa
+         Option S             print: congela a tela, escolha a área, desenhe; ⌘C copia, ⌘S salva, Esc cancela
          Option 1 a 4         vai pro workspace; com Shift, manda a janela focada pra ele
 Config:  ~/.config/niri-os/config.json, ou pelo ícone na barra de menu. Salvar aplica na hora.
 """
@@ -35,6 +36,10 @@ if let name = value("--workspace") {
     DistributedNotificationCenter.default().postNotificationName(WindowManager.workspaceRequest, object: name,
                                                                  userInfo: nil, deliverImmediately: true)
     exit(0)
+}
+// O editor do print do Option+S (ver `Screenshot`): a foto chega pelo stdin.
+if let display = value("--screenshot").flatMap(UInt32.init), let i = argv.firstIndex(of: "--screenshot"), i + 2 < argv.count {
+    ScreenshotEditor.run(display: display, folder: URL(fileURLWithPath: argv[i + 2]), since: value("-v").flatMap(Double.init))
 }
 // O painel de configurações, aberto pelo ícone na barra de menu (ver `Settings`).
 if args.contains("--settings") { SettingsPanel.run() }
@@ -105,7 +110,8 @@ let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow":
                                "move-left": .moveColumnLeft, "move-right": .moveColumnRight,
                                "stack-left": .consumeOrExpelLeft, "stack-right": .consumeOrExpelRight,
                                "taller": .growHeight, "shorter": .shrinkHeight, "up": .focusUp, "down": .focusDown,
-                               "full": .toggleFullWidth, "desktop": .toggleDesktop, "clipboard": .clipboard]
+                               "full": .toggleFullWidth, "desktop": .toggleDesktop, "clipboard": .clipboard,
+                               "screenshot": .screenshot]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
 // `wait`: um passo sem ação (ex.: o painel do Option+V aberto, que qualquer outro atalho fecha).
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action?? in

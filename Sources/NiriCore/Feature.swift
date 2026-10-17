@@ -3,7 +3,7 @@
 public enum Feature: String, CaseIterable, Sendable {
     /// A fita de janelas, com os workspaces. Ligar ou desligar reinicia o niri-os (ver `Settings.restart`).
     case tiling
-    case border, clipboard, wallpaper
+    case border, clipboard, screenshot, wallpaper
 
     /// O recurso que precisa estar ligado junto. A borda segue a janela focada que a fita informa, e sem a fita teria que
     /// descobrir o foco lendo os apps pela Acessibilidade.

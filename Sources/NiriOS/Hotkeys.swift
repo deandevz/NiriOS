@@ -8,17 +8,28 @@ enum Action: Hashable {
     case consumeOrExpelLeft, consumeOrExpelRight, toggleFullWidth, toggleDesktop
     /// Abre e fecha o histórico do que foi copiado (ver `Clipboard`).
     case clipboard
+    /// Congela a tela pra escolher a área do print (ver `Screenshot`). De novo, fecha.
+    case screenshot
     /// Vai pro workspace com esse nome / manda a janela focada pra ele.
     case workspace(String), moveToWorkspace(String)
 
     /// As ações de "shortcuts", na ordem do painel.
     static let allCases: [Action] = [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown,
                                      .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop,
-                                     .clipboard]
+                                     .clipboard, .screenshot]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
         self = a
+    }
+
+    /// O recurso que precisa estar ligado pro atalho valer (ver `Config.active`).
+    var feature: Feature {
+        switch self {
+        case .clipboard: .clipboard
+        case .screenshot: .screenshot
+        default: .tiling
+        }
     }
 
     /// Segurar a tecla repete resize, navegação e mover coluna. Tela cheia e mesa alternando sem parar não fazem sentido,
@@ -43,6 +54,7 @@ final class HotkeyTap {
         var paused = false
         /// Ações que agora não fariam nada: a tecla passa pro app (ver `idle`).
         var idle: Set<Action> = []
+        var solo: Action?
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -79,6 +91,13 @@ final class HotkeyTap {
     var idle: Set<Action> {
         get { state.withLock { $0.idle } }
         set { state.withLock { $0.idle = newValue } }
+    }
+
+    /// Só esse atalho é do niri-os; os outros vão pro app da frente. O editor do print aberto recebe o Option+, no texto,
+    /// e as janelas não andam por baixo da foto congelada.
+    var solo: Action? {
+        get { state.withLock { $0.solo } }
+        set { state.withLock { $0.solo = newValue } }
     }
 
     /// Os modificadores de algum atalho estão apertados agora, segundo o estado do teclado.
@@ -125,7 +144,7 @@ final class HotkeyTap {
             }
             return Unmanaged.passUnretained(event)
         }
-        let (bindings, holds, paused, idle) = state.withLock { ($0.bindings, $0.holds, $0.paused, $0.idle) }
+        let (bindings, holds, paused, idle, solo) = state.withLock { ($0.bindings, $0.holds, $0.paused, $0.idle, $0.solo) }
         let mods = event.flags.intersection(Shortcut.modifierMask)
         if type == .flagsChanged {
             let down = holds.contains(mods.subtracting(.maskShift).rawValue)
@@ -144,7 +163,7 @@ final class HotkeyTap {
         if verbose && type == .keyDown && holds.contains(mods.subtracting(.maskShift).rawValue) {
             log("tecla: \(Shortcut(key: keycode, mods: mods)) (código \(keycode)) -> \(action.map { "\($0)" } ?? "sem atalho")")
         }
-        guard let action, !idle.contains(action) else { return Unmanaged.passUnretained(event) }
+        guard let action, !idle.contains(action), solo == nil || solo == action else { return Unmanaged.passUnretained(event) }
 
         if type == .keyDown {
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
