@@ -2,11 +2,15 @@
 
 Tiling em fita horizontal pro macOS, no modelo do niri. Protótipo do MVP: workspaces, tela principal.
 
-## Rodar
+## Instalar
 
-1. Feche o OmniWM (o niri-os se recusa a abrir com ele rodando: os dois brigariam pelas janelas).
+`brew install --cask deandevz/tap/niri-os` (macOS 26, Apple Silicon). Na primeira abertura, o tour pede as permissões e deixa escolher o que ligar. O app se atualiza sozinho (seção "Distribuição").
+
+## Rodar do código
+
+1. Feche o OmniWM (com a fita ligada, o niri-os se recusa a abrir com ele rodando: os dois brigariam pelas janelas).
 2. O terminal que roda o niri-os precisa de permissão em Ajustes do Sistema > Privacidade e Segurança > Acessibilidade.
-3. `./scripts/run.sh` (ou `./scripts/run.sh -v` pra ver as medições de cada animação).
+3. `./scripts/run.sh` (ou `./scripts/run.sh -v` pra ver as medições de cada animação). Rodando do `.build` não tem tour, update nem abrir ao iniciar, e o log fica no terminal.
 4. Clique (esquerdo ou direito) no ícone da barra de menu (três colunas) abre o painel de configurações.
 5. `Ctrl+C`, ou "Sair do NiriOS" no painel, devolve todas as janelas pra dentro da tela e sai.
 
@@ -394,6 +398,42 @@ Testado e descartado:
 
 Limitações: o `Cmd V` mandado usa a posição da tecla V (em Dvorak cairia em outra letra); com a entrada segura do macOS ligada (campo de senha focado), o atalho não chega, como os outros do niri-os.
 
+## Distribuição: NiriOS.app, Homebrew e update (2026-10-16)
+
+`./scripts/app.sh 0.1.0` monta o `NiriOS.app` em `.build/dist`, assina e gera o zip. `./scripts/release.sh 0.1.0 "notas"` faz isso, marca o código com a tag `v0.1.0`, cria a release em [deandevz/niri-os-releases](https://github.com/deandevz/niri-os-releases) (repo público só com os apps, porque este é privado e o brew e o update não baixam de repo privado sem token) e atualiza o cask `niri-os` no `homebrew-tap`. As notas aparecem na janela do update.
+
+- **O app:** bundle id `com.kingdeanprod.niri-os`, só Apple Silicon, `LSMinimumSystemVersion` 26.0 (as APIs privadas só foram medidas no 26), `LSUIElement` (sem Dock). Compilado em `.build/app`, porque em `.build/release` pode estar o niri-os de uso rodando. O ícone sai de `scripts/icon.swift`.
+- **Assinatura:** certificado autoassinado "NiriOS" (SHA-1 `2200F6F6BFFD090A9B35104FFA61475BD4A70903`, vale até 2046), no chaveiro de login. A regra que o macOS guarda junto com a Acessibilidade e a Gravação de Tela é `identifier "com.kingdeanprod.niri-os" and certificate root = H"2200f6…"`, igual em toda versão. Com assinatura ad-hoc (sem certificado) a regra seria o hash do binário: cada versão perderia as permissões, e a chave continuaria ligada nos Ajustes sem funcionar. O certificado e a chave privada ficam fora do repositório. Sem ele, a versão seguinte não passa no update e todo mundo reinstala e libera as permissões de novo: guardar cópia fora do Mac. Runtime endurecido (`--options runtime`): o app ignora `DYLD_INSERT_LIBRARIES`, senão qualquer processo do usuário abriria o NiriOS com código seu e herdaria a Acessibilidade dele.
+- **Homebrew:** cask `niri-os` no tap `deandevz/tap`, copiado do King Bot. `auto_updates true` (o app se atualiza e o brew só instala), quarentena tirada com `xattr` depois de instalar (sem Developer ID nem notarização, o Gatekeeper bloquearia), `uninstall quit` (sair pelo macOS devolve as janelas pra tela).
+- **Update (`Updater`):** o niri-os abre `niri-os --update` 1 min depois de abrir e depois a cada 24 h, no relógio de parede (no monotônico, o tempo com o Mac dormindo não conta), e pelo "Procurar atualização" da aba Geral. O processo lê `releases/latest` do repo público, baixa o zip numa pasta da mesma partição do app e confere o bundle id, a versão da tag e a assinatura com a regra deste app (`SecStaticCodeCheckValidity`). Só então pergunta, com as notas. "Atualizar agora" passa o caminho pro niri-os, que troca o app num rename (`replaceItemAt`; se falhar, continua na versão de antes), guarda o estado sem mexer nas janelas (como o `SIGUSR1`) e reabre. "Depois" apaga o baixado, e amanhã pergunta de novo. Num processo à parte, como o painel: URLSession e SwiftUI deixariam memória presa no niri-os.
+- **Reabrir no app é pelo LaunchServices** (`AppBundle.relaunch`, também na fita ligada ou desligada e no fim do tour): filho do processo velho, as permissões seriam conferidas no processo que abriu, que vai sair. O processo novo recebe os argumentos e só as variáveis `NIRI_*` (as de teste).
+- **Um gerenciador por vez:** lock em `Application Support/niri-os/niri-os.lock`, solto quando o processo sai (até caindo). O macOS não abre o app duas vezes, mas o `.build/release/niri-os` e o NiriOS.app abririam. Espera até 3 s, porque no reinício o processo velho ainda está saindo. Teste (`--pid`, `--script`) não pega o lock.
+- **Sair pelo macOS** (logout, desligar, `brew uninstall`, Encerrar no Monitor de Atividade) é o mesmo do `Ctrl+C`. Antes o processo saía com as janelas estacionadas na borda.
+- **Log:** no app vai pra `~/Library/Logs/niri-os.log` (aberto pelo Finder ou no login, o stderr iria pro nada), e passando de 5 MB o de antes vira `niri-os.old.log`. "Mostrar o log" na aba Geral. Rodando do terminal, continua no terminal.
+- **Abrir ao iniciar:** `SMAppService.mainApp`, na aba Geral e no fim do tour (ligado por padrão). O estado fica no macOS (Ajustes > Geral > Itens de início), não no config.
+
+Medido (2026-10-16, servidor local fingindo o GitHub, zip de 950 KB):
+
+- Baixar, abrir e conferir a versão nova: ~20 ms. O app baixado não tem quarentena (o niri-os não marca o que baixa).
+- Versão assinada por outro certificado (o "King Bot Dev"): recusada com `-67050` (a regra não bate), e o baixado sai do disco. Na conferência diária, erro não abre janela, só vai pro log.
+- O processo do update: 21 MB com a janela aberta, e sai ao fechar. O niri-os de uso com o código novo: 12 MB e 0% de CPU parado, como antes.
+- Segundo niri-os sem `--pid` com o de uso aberto: recusa em 3,4 s ("O NiriOS já está aberto").
+
+De ponta a ponta, com o app de teste em `~/Applications` e `--pid` (2026-10-16): o tour terminou e reabriu como gerenciador em 75 ms, com o config de tudo desligado. A conferência do update rodou 60 s depois de abrir, e da troca até a 0.0.2 aberta foram 0,45 s, sem o tour: a Acessibilidade continuou valendo. Na 0.0.2, um resize no teste moveu as janelas ("tudo no lugar") e o vidro mediu o redesenho ("pronta em 102 ms" e "em 84 ms"), então a Gravação de Tela também continuou valendo. Maior intervalo entre frames de 10,0 ms, com o runtime endurecido. Ligar a fita reabriu pelo LaunchServices em 62 ms. Abrir ao iniciar: o tour registrou (`enabled, allowed`), a aba Geral leu o estado depois do update e desligou. Sair pelo macOS (`NSRunningApplication.terminate`) foi pelo caminho do `Ctrl+C`, e o painel aberto saiu junto.
+
+- **A lista da Acessibilidade só mostra app registrado no LaunchServices.** O app de teste em `/private/tmp` pediu a permissão, e o `tccd` criou o registro, mas a lista dos Ajustes não mostrava o NiriOS: `failed to find an Application URL for bundle ID`. O macOS não registra app em pasta temporária. Em `~/Applications` (e em /Applications, onde o brew instala) apareceu na hora.
+- **"Sair e reabrir" da Gravação de Tela reabre o app sem argumentos.** No teste, ele leu o config de uso e o lock do niri-os de uso fez ele se recusar a abrir, em vez de brigar pelas janelas. No uso de verdade não tem outro niri-os, e sem config ele volta pro tour.
+
+### Primeira abertura (`Welcome`)
+
+O NiriOS.app sem `config.json` abre o tour: boas-vindas, permissões, o que ligar (fita, borda e histórico, tudo desligado), os atalhos e "abrir ao iniciar". No fim grava o config com o que ficou desligado e reabre como o gerenciador. Fechar a janela com a Acessibilidade liberada é terminar com o que foi escolhido até ali; sem ela, o app sai, e a próxima abertura volta pra mesma tela (`welcomePage` nos defaults). Sem a Acessibilidade e com config (tirada nos Ajustes, ou um app de outro certificado), só a página das permissões.
+
+- **Roda antes da fita, no próprio processo, e reabre no fim:** os ~40 MB do SwiftUI que não voltam (seção "Barra de menu") saem com o processo.
+- **No Dock enquanto está aberto** (`.regular`): a pessoa vai nos Ajustes do Sistema liberar e precisa achar a volta. Liberou a Acessibilidade, a janela volta pra frente sozinha.
+- **As permissões não avisam quando mudam:** conferidas a cada 0,5 s, só com o tour aberto.
+- **Gravação de Tela:** o macOS pede pra reabrir o app depois de liberar ("Sair e reabrir"). Reaberto sem config, o tour volta na tela das permissões. Ela é recomendada, não obrigatória: sem ela o vidro do resize espera 300 ms fixos e a borda não mede o canto das janelas quadradas.
+- **Outro gerenciador aberto** (AeroSpace, OmniWM): o tour avisa ao ligar a fita, e o niri-os só se recusa a abrir com a fita ligada.
+
 ## Testar sem mexer nas suas janelas
 
 ```sh
@@ -404,7 +444,7 @@ swift build -c release
 
 `--pid` faz o niri-os cuidar só daquele app, numa faixa no pé da tela, sem atalhos e sem roubar foco. Com `NIRI_CONFIG` e sem `--script`, o teste também ganha o ícone e a recarga do config (pra testar ligar e desligar recursos, inclusive a fita, sem mexer no config de uso). Com o niri-os de uso aberto, rode o de teste de uma cópia do executável (`cp .build/release/niri-os /tmp/niri-os-teste`): com dois processos do mesmo arquivo, a captura de janela do segundo (`SLSHWCaptureWindowList`, que passa pelo `replayd`) nunca volta (visto em 2026-10-16). O vidro do resize sai mesmo assim depois de 0,85 s, e as capturas param até reiniciar. Sem `--pid`, o `--script` roda nas janelas de verdade e troca o foco; no fim sai sem mexer nas janelas (como o `SIGUSR1`). O script começa da janela focada, então confira qual app está na frente antes. Funciona com o OmniWM aberto. No fim ele lê o frame real de cada janela e compara com o esperado (sai com código 2 se algo ficou fora do lugar). `./scripts/test.sh` roda os testes do layout. Um deles confere em todo frame de 6 animações que o espaço entre janelas é exatamente o `gap`.
 
-`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). `NIRI_CLIPBOARD=<pasta>` liga o histórico do clipboard no teste, com outra pasta: `clipboard` no `--script` abre e fecha o painel, e `wait` é um passo sem ação (qualquer outro atalho fecha o painel). No `--script`, `move-left` e `move-right` trocam a coluna focada de lugar, `stack-left` e `stack-right` empilham ou separam, `taller`, `shorter`, `up` e `down` são a altura e o foco na coluna, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
+`niri-os --list` lista as janelas e se entrariam na fita (ou por que não), sem mexer em nada. `NIRI_UPDATE_URL=<url>` troca a release que o update lê (um JSON no formato do `releases/latest` do GitHub, servido de um servidor local). O tour aparece no NiriOS.app com `NIRI_CONFIG` apontando pra um arquivo que não existe (`open -n NiriOS.app --env NIRI_CONFIG=... --args --pid <pid>`). `NIRI_CONFIG=<arquivo>` usa outro config (pra testar uma config sem mexer na de uso). `NIRI_CLIPBOARD=<pasta>` liga o histórico do clipboard no teste, com outra pasta: `clipboard` no `--script` abre e fecha o painel, e `wait` é um passo sem ação (qualquer outro atalho fecha o painel). No `--script`, `move-left` e `move-right` trocam a coluna focada de lugar, `stack-left` e `stack-right` empilham ou separam, `taller`, `shorter`, `up` e `down` são a altura e o foco na coluna, `ws:<nome>` vai pro workspace e `move:<nome>` manda a focada pra ele; em teste o `open` e o `onWorkspaceChange` não rodam.
 
 ## Limitações conhecidas
 

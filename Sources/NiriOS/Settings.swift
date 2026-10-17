@@ -4,7 +4,7 @@ import AppKit
 /// painel ou à mão) é aplicado na hora. Vigiado por FSEvents, sem polling.
 ///
 /// Clique (esquerdo ou direito) no ícone abre o painel, que roda em outro processo (`niri-os --settings`)
-/// e termina quando a janela fecha. Dentro deste, abrir o painel uma vez subia a memória de 12 pra 50 MB,
+/// e termina quando a janela fecha. O update também (ver `Updater`). Dentro deste, abrir o painel uma vez subia a memória de 12 pra 50 MB,
 /// com pico de 260 MB (o `Form` do SwiftUI), e fechar só devolvia 6 MB. Menu no ícone também ficou de
 /// fora: abrir um `NSMenu` uma vez custa 3,3 MB que não voltam. Os dois processos conversam pelo arquivo
 /// e por linhas no pipe (`command`).
@@ -15,7 +15,10 @@ final class Settings: NSObject {
     /// O conteúdo do arquivo na última recarga: evento do FSEvents sem mudança real não recarrega de novo.
     private var loaded: Data?
     private var panel: Process?
-    private var panelWindow: CGWindowID?
+    private var updater: Process?
+    /// A janela de cada processo nosso aberto, pra trazer pra frente (ver `front`).
+    private var windows: [pid_t: CGWindowID] = [:]
+    private var updateTimer: DispatchSourceTimer?
 
     init(wm: WindowManager) {
         self.wm = wm
@@ -37,6 +40,17 @@ final class Settings: NSObject {
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         loaded = try? Data(contentsOf: Config.path)
         watch()
+        scheduleUpdates()
+        // Sair pelo macOS (ver `AppDelegate`).
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.closeChildren()
+        }
+    }
+
+    /// O painel e o update saem junto: sozinhos, ficariam abertos sem ninguém pra atender os pedidos.
+    private func closeChildren() {
+        panel?.terminate()
+        updater?.terminate()
     }
 
     private func watch() {
@@ -75,28 +89,18 @@ final class Settings: NSObject {
     /// `NIRI_OPEN_SETTINGS`: o processo novo abre o painel (ver `restart`).
     static let reopenKey = "NIRI_OPEN_SETTINGS"
 
-    /// Ligar ou desligar a fita reinicia o niri-os: um processo novo do mesmo executável, com os mesmos argumentos e o
-    /// mesmo log, e este sai. Montar e desmontar a fita com o app aberto teria que desfazer as filas por app, os
-    /// observadores, o display link e as janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout.
-    /// Assim são dois caminhos que já existem: desligar devolve as janelas pra tela (o mesmo do Ctrl+C) e guarda o
-    /// estado; ligar monta a fita do state.json, como ao abrir. O painel aberto fecha e abre de novo no processo novo.
-    /// Com `exec` (mesmo pid) o ícone ia pra fora da barra de menu e não voltava, nem tirando ele antes.
+    /// Ligar ou desligar a fita reinicia o niri-os: um processo novo, com os mesmos argumentos (ver `AppBundle.relaunch`),
+    /// e este sai. Montar e desmontar a fita com o app aberto teria que desfazer as filas por app, os observadores, o
+    /// display link e as janelas nossas, e é desse tipo de sobra que nasce estado que discorda do layout. Assim são dois
+    /// caminhos que já existem: desligar devolve as janelas pra tela (o mesmo do Ctrl+C) e guarda o estado; ligar monta a
+    /// fita do state.json, como ao abrir. O painel aberto fecha e abre de novo no processo novo. Com `exec` (mesmo pid) o
+    /// ícone ia pra fora da barra de menu e não voltava, nem tirando ele antes.
     private func restart() -> Never {
         log("fita \(wm.config.has(.tiling) ? "desligada" : "ligada"): reiniciando o niri-os")
         let reopen = panel != nil
-        panel?.terminate()
+        closeChildren()
         wm.shutdown()  // sem a fita, não mexe em nada
-        let p = Process()  // herda o stdout e o stderr (o log); os outros descritores ficam fechados no filho
-        p.executableURL = Bundle.main.executableURL
-        p.arguments = Array(CommandLine.arguments.dropFirst())
-        p.environment = ProcessInfo.processInfo.environment.merging(reopen ? [Self.reopenKey: "1"] : [:]) { $1 }
-        do {
-            try p.run()
-        } catch {
-            log("não consegui reiniciar (\(error)): abra o niri-os de novo")
-            exit(1)
-        }
-        exit(0)  // o pipe do papel de parede fecha: ele vê o fim do stdin e sai, e o processo novo abre outro
+        AppBundle.relaunch(environment: reopen ? [Self.reopenKey: "1"] : [:])
     }
 
     static func openFile(reveal: Bool = false) {
@@ -104,61 +108,107 @@ final class Settings: NSObject {
         if reveal { NSWorkspace.shared.activateFileViewerSelecting([Config.path]) } else { NSWorkspace.shared.open(Config.path) }
     }
 
-    /// O que o painel pede, uma linha por pedido.
-    private func command(_ line: Substring) {
+    /// O que o painel e o update pedem, uma linha por pedido.
+    private func command(_ line: Substring, from p: Process) {
         let word = line.split(separator: " ")
         switch word.first ?? "" {
         case "pause", "resume": wm.shortcutsPaused = line == "pause"
         case "front":
-            panelWindow = word.last.flatMap { CGWindowID($0) }
-            frontPanel()
+            windows[p.processIdentifier] = word.last.flatMap { CGWindowID($0) }
+            front(p)
         case "reload": reload()
+        case "update": checkUpdate(manual: true)
+        // Pelos argumentos e não por `updater`: o processo sai logo depois de pedir, e o fim dele pode chegar antes.
+        case "install" where p.arguments?.first == "--update": install(String(line.dropFirst("install ".count)))
         case "quit":
             log("saindo pelo painel: devolvendo as janelas pra dentro da tela")
-            panel?.terminate()
+            closeChildren()
             wm.shutdown()
             exit(0)
         default: log("painel: pedido desconhecido '\(line)'")
         }
     }
 
-    /// O painel na frente, com o teclado nele. Pedido daqui, do mesmo jeito que o foco da fita: pedido pelo
-    /// próprio painel (`NSApp.activate()` ou o SkyLight), ele às vezes ficava atrás do app da frente.
-    private func frontPanel() {
-        guard let pid = panel?.processIdentifier, let w = panelWindow else { return }
+    /// A janela de um processo nosso na frente, com o teclado nela. Pedido daqui, do mesmo jeito que o foco da fita:
+    /// pedido pelo próprio processo (`NSApp.activate()` ou o SkyLight), o painel às vezes ficava atrás do app da frente.
+    private func front(_ p: Process?) {
+        guard let pid = p?.processIdentifier, let w = windows[pid] else { return }
         Private.focus(pid: pid, window: w, element: AXUIElementCreateApplication(pid), switchWindow: true)
     }
 
     @objc func openPanel() {
-        guard panel == nil else { return frontPanel() }  // já aberto, atrás de outro app
-        guard let exe = Bundle.main.executableURL else { return }
-        let p = Process(), out = Pipe()
-        p.executableURL = exe
-        p.arguments = ["--settings"]
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice  // o log do niri-os mostra a recarga dele, não a do painel
-        out.fileHandleForReading.readabilityHandler = { [weak self] h in
-            let data = h.availableData
-            if data.isEmpty { h.readabilityHandler = nil; return }  // o painel fechou
-            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
-            DispatchQueue.main.async { lines.forEach { self?.command($0) } }
-        }
-        p.terminationHandler = { [weak self] p in
+        guard panel == nil else { return front(panel) }  // já aberto, atrás de outro app
+        // O log do niri-os mostra a recarga dele, não a do painel.
+        panel = child(["--settings"], quiet: true) { [weak self] p in
             // SIGTERM é o "Sair do NiriOS" fechando o painel junto; o resto é queda.
             let crashed = p.terminationReason == .uncaughtSignal ? p.terminationStatus != SIGTERM : p.terminationStatus != 0
             if crashed { log("painel caiu (\(p.terminationReason == .uncaughtSignal ? "sinal" : "código") \(p.terminationStatus))") }
+            self?.panel = nil
+            self?.wm.shortcutsPaused = false  // mesmo se o painel caiu gravando
+            self?.wm.refocus()  // o teclado volta pra janela focada da fita
+        }
+    }
+
+    /// Um processo nosso com janela (o painel, o update), que pede coisas por linhas no stdout (ver `command`).
+    private func child(_ args: [String], quiet: Bool, ended: @escaping (Process) -> Void) -> Process? {
+        guard let exe = Bundle.main.executableURL else { return nil }
+        let p = Process(), out = Pipe()
+        p.executableURL = exe
+        p.arguments = args
+        p.standardOutput = out
+        if quiet { p.standardError = FileHandle.nullDevice }
+        out.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let data = h.availableData
+            if data.isEmpty { h.readabilityHandler = nil; return }  // o processo fechou
+            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            DispatchQueue.main.async { lines.forEach { self?.command($0, from: p) } }
+        }
+        p.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
-                self?.panel = nil
-                self?.panelWindow = nil
-                self?.wm.shortcutsPaused = false  // mesmo se o painel caiu gravando
-                self?.wm.refocus()  // o teclado volta pra janela focada da fita
+                self?.windows[p.processIdentifier] = nil
+                ended(p)
             }
         }
         do {
             try p.run()
-            panel = p
+            return p
         } catch {
-            log("não consegui abrir o painel: \(error)")
+            log("não consegui abrir \(args.joined(separator: " ")): \(error)")
+            return nil
         }
+    }
+
+    // MARK: - Update (ver `Updater`)
+
+    /// Uma vez por dia, a primeira 1 min depois de abrir. No relógio de parede: no monotônico o tempo com o Mac dormindo
+    /// não conta, e cada noite empurraria a conferência. Só no app (o `.build/release/niri-os` não tem versão).
+    private func scheduleUpdates() {
+        guard AppBundle.version != nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(wallDeadline: .now() + 60, repeating: .seconds(24 * 3600), leeway: .seconds(600))
+        t.setEventHandler { [weak self] in self?.checkUpdate(manual: false) }
+        t.resume()
+        updateTimer = t
+    }
+
+    private func checkUpdate(manual: Bool) {
+        guard updater == nil else { return front(updater) }  // a pergunta de antes continua aberta
+        updater = child(["--update"] + (manual ? ["--manual"] : []), quiet: false) { [weak self] _ in self?.updater = nil }
+    }
+
+    /// O app novo, já conferido pelo processo do update, no lugar deste. A troca é um rename (os dois na mesma partição);
+    /// se falhar, fica tudo como estava. Depois guarda o estado sem mexer nas janelas, como o SIGUSR1, e reabre.
+    private func install(_ path: String) {
+        let staged = URL(fileURLWithPath: path)
+        do {
+            _ = try FileManager.default.replaceItemAt(Bundle.main.bundleURL, withItemAt: staged)
+        } catch {
+            return log("update: não consegui trocar o app (\(error.localizedDescription)); continuo nesta versão")
+        }
+        try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())  // a pasta temporária, já vazia
+        log("update: app trocado, reabrindo")
+        closeChildren()
+        wm.saveState()
+        AppBundle.relaunch()
     }
 }

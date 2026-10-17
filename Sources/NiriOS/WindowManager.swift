@@ -74,6 +74,11 @@ final class WindowManager: NSObject {
     }
     /// `niri-os --workspace <nome>` (o clique na SketchyBar, por exemplo) chega por aqui.
     static let workspaceRequest = Notification.Name("niri-os.workspace")
+
+    /// Os outros gerenciadores abertos: dois mexendo nas mesmas janelas brigam a cada frame.
+    static func runningRivals() -> [String] {
+        NSWorkspace.shared.runningApplications.compactMap(\.localizedName).filter(["OmniWM", "AeroSpace", "Amethyst", "Paneru"].contains)
+    }
     private lazy var hotkeys: HotkeyTap = {
         let tap = HotkeyTap(verbose: verbose) { [weak self] in self?.perform($0) }
         tap.setShortcuts(config.shortcuts)

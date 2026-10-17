@@ -49,14 +49,24 @@ if let id = value("--clipboard-read"), let count = argv.last.flatMap(Int.init) {
 if let path = value("--wallpaper") {
     WallpaperProcess.run(path, effect: argv.last.flatMap(WallpaperEffect.init) ?? .none)
 }
+// O update, aberto pelo niri-os uma vez por dia e pelo painel (ver `Updater`).
+if args.contains("--update") { MainActor.assumeIsolated { Updater.run(manual: args.contains("--manual")) } }
+
+// Daqui pra baixo é o niri-os em si. Os processos acima herdam o log dele.
+AppBundle.redirectLog()
 
 // Reiniciado por ligar ou desligar a fita com o painel aberto (ver `Settings.restart`). Sai do ambiente antes de abrir
 // outro processo.
 let reopenSettings = getenv(Settings.reopenKey) != nil
 unsetenv(Settings.reopenKey)
 
+// No app quem pede é o tour (ver `Welcome`), que explica pra que serve cada permissão. Ele também abre sem o config, na
+// primeira vez: o config que ele grava vem com tudo desligado, menos o que a pessoa ligou.
 let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-guard AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary) else {
+let trusted = AXIsProcessTrustedWithOptions([promptKey: !AppBundle.isApp] as CFDictionary)
+let firstRun = !FileManager.default.fileExists(atPath: Config.path.path)
+if AppBundle.isApp && (!trusted || firstRun) { Welcome.run(tour: firstRun) }
+guard trusted else {
     log("""
     sem permissão de Acessibilidade. Libere o app que está rodando o niri-os (o terminal, ex.: WezTerm) \
     em Ajustes do Sistema > Privacidade e Segurança > Acessibilidade, feche e abra o terminal e rode de novo.
@@ -106,17 +116,31 @@ dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Su
     return a
 }
 
-// Dois gerenciadores mexendo nas mesmas janelas = briga a cada frame.
-let rivals = ["OmniWM", "AeroSpace", "Amethyst", "Paneru"]
-let running = NSWorkspace.shared.runningApplications.compactMap(\.localizedName).filter(rivals.contains)
-if !running.isEmpty && !args.contains("--force") && dev.pid == nil {
-    log("feche antes: \(running.joined(separator: ", ")). (Ou rode com --force.)")
-    exit(1)
+// Dois gerenciadores mexendo nas mesmas janelas = briga a cada frame. Sem a fita, o niri-os não mexe em janela.
+let rivals = WindowManager.runningRivals()
+if config.has(.tiling) && !rivals.isEmpty && !args.contains("--force") && dev.pid == nil {
+    AppBundle.fail("Feche o \(rivals.joined(separator: " e o ")) e abra o NiriOS de novo: dois gerenciadores mexendo nas mesmas janelas brigam a cada frame. (Ou rode com --force.)")
+}
+// Teste (--pid, --script) roda ao lado da instância de uso.
+if dev.pid == nil && dev.script.isEmpty && !AppBundle.lock() {
+    AppBundle.fail("O NiriOS já está aberto: o ícone de três colunas na barra de menu.")
 }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let wm = WindowManager(config: config, verbose: args.contains("-v") || args.contains("--verbose"), dev: dev)
+
+/// Sair pelo macOS (logout, desligar, `brew uninstall`, Encerrar no Monitor de Atividade) é o mesmo do Ctrl+C. Sem isso
+/// o processo saía com as janelas estacionadas na borda da tela.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        log("saindo pelo macOS: devolvendo as janelas pra dentro da tela")
+        wm.shutdown()
+        return .terminateNow
+    }
+}
+let delegate = AppDelegate()
+app.delegate = delegate
 
 // O processo do papel de parede caído: escrever no stdin dele vira erro, não queda do niri-os.
 signal(SIGPIPE, SIG_IGN)

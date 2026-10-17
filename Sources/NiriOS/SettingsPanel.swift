@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import NiriCore
+import ServiceManagement
 import SwiftUI
 
 /// O painel de configurações (processo `niri-os --settings`, aberto pelo ícone na barra; ver `Settings`).
@@ -41,7 +42,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         tabs.addTabViewItem(tab("Workspaces", "rectangle.split.3x1", height: 470, WorkspacesTab(panel: self)))
         tabs.addTabViewItem(tab("Papel de parede", "photo", height: 520, WallpaperTab(panel: self)))
         tabs.addTabViewItem(tab("Borda", "square.dashed", height: 360, BorderTab(panel: self)))
-        tabs.addTabViewItem(tab("Geral", "gearshape", height: 220, GeneralTab(panel: self)))
+        tabs.addTabViewItem(tab("Geral", "gearshape", height: 400, GeneralTab(panel: self)))
         // Abre na última aba usada (`-settingsTab <n>` na linha de comando também vale).
         tabs.selectedTabViewItemIndex = min(UserDefaults.standard.integer(forKey: "settingsTab"), tabs.tabViewItems.count - 1)
         let w = NSWindow(contentViewController: tabs)
@@ -52,7 +53,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         w.center()
         window = w
         w.makeKeyAndOrderFront(nil)
-        send("front \(w.windowNumber)")  // o niri-os traz pra frente (ver `Settings.frontPanel`)
+        send("front \(w.windowNumber)")  // o niri-os traz pra frente (ver `Settings.front`)
     }
 
     private func tab(_ title: String, _ icon: String, height: CGFloat, _ view: some View) -> NSTabViewItem {
@@ -332,6 +333,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         scheduleSave()
     }
 
+    func setOpensAtLogin(_ on: Bool) {
+        AppBundle.setOpensAtLogin(on)
+        model.loginItem = AppBundle.loginItem
+    }
+
     func wallpaperChanged() {
         scheduleSave()
         refreshPreview()
@@ -378,6 +384,8 @@ struct AppRef {
     var effect = WallpaperEffect.none
     var preview: CGImage?
     var disabled: Set<Feature> = []
+    /// Abrir ao iniciar o Mac: o estado é do macOS (ver `AppBundle.loginItem`).
+    var loginItem = AppBundle.isApp ? AppBundle.loginItem : .notRegistered
     func has(_ f: Feature) -> Bool { f.isOn(disabled) }
     var isVideo: Bool { wallpaper.map(WallpaperArt.isVideo) ?? false }
     /// Com efeito, a prévia é um recorte do centro em tamanho real; sem efeito, a tela inteira reduzida.
@@ -738,6 +746,31 @@ private struct GeneralTab: View {
                 }
             }
             Section {
+                Toggle("Abrir ao iniciar o Mac", isOn: Binding(get: { panel.model.loginItem == .enabled },
+                                                               set: { panel.setOpensAtLogin($0) }))
+                    .accessibilityLabel("Abrir ao iniciar o Mac")  // sem isso a chave fica sem nome, como as dos recursos
+                if panel.model.loginItem == .requiresApproval {
+                    HStack {
+                        Text("Falta ligar o NiriOS nos Ajustes do Sistema, em Itens de início.").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Abrir os Ajustes") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                }
+            }
+            .disabled(!AppBundle.isApp)
+            Section {
+                LabeledContent("Versão", value: AppBundle.version ?? "desenvolvimento (.build)")
+                HStack {
+                    Button("Procurar atualização") { panel.send("update") }.disabled(AppBundle.version == nil)
+                    Spacer()
+                    Button("Mostrar o log") { NSWorkspace.shared.activateFileViewerSelecting([AppBundle.logURL]) }
+                        .disabled(!AppBundle.isApp)  // rodando do .build, o log fica no terminal
+                }
+            } footer: {
+                Text("O NiriOS procura atualização uma vez por dia e pergunta antes de instalar.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
                 Button("Sair do NiriOS", role: .destructive) { panel.send("quit") }
             }
         }
@@ -788,7 +821,7 @@ private struct AppIcon: View {
 }
 
 /// Uma tecla desenhada. Com o mouse em cima, aparece o x pra remover (no canto, sem empurrar as outras).
-private struct KeyCap: View {
+struct KeyCap: View {
     let text: String
     var active = false
     var remove: (() -> Void)?
