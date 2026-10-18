@@ -122,6 +122,12 @@ dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Su
     return a
 }
 
+// Antes do lock: no `AppBundle.relaunch` o processo de antes, que segura o lock, só sai quando este se registra no
+// LaunchServices, e é aqui que registra. Depois do lock, os dois esperavam um pelo outro até o lock desistir aos 3,4 s
+// ("já está aberto") e os dois saírem.
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+
 // Dois gerenciadores mexendo nas mesmas janelas = briga a cada frame. Sem a fita, o niri-os não mexe em janela.
 let rivals = WindowManager.runningRivals()
 if config.has(.tiling) && !rivals.isEmpty && !args.contains("--force") && dev.pid == nil {
@@ -132,8 +138,6 @@ if dev.pid == nil && dev.script.isEmpty && !AppBundle.lock() {
     AppBundle.fail("O NiriOS já está aberto: o ícone de três colunas na barra de menu.")
 }
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
 let wm = WindowManager(config: config, verbose: args.contains("-v") || args.contains("--verbose"), dev: dev)
 
 /// Sair pelo macOS (logout, desligar, `brew uninstall`, Encerrar no Monitor de Atividade) é o mesmo do Ctrl+C. Sem isso

@@ -24,7 +24,7 @@ enum AppBundle {
 
     /// Um gerenciador por vez: dois mexendo nas mesmas janelas brigam a cada frame. O macOS não abre o app duas vezes, mas
     /// o `.build/release/niri-os` e o NiriOS.app abririam. O lock solta quando o processo sai, até caindo. Espera até 3 s:
-    /// no `relaunch` o processo de antes ainda está saindo.
+    /// no `relaunch` o processo de antes ainda está saindo (ele sai quando este cria o `NSApplication`, antes do lock).
     static func lock() -> Bool {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/niri-os/niri-os.lock")
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
