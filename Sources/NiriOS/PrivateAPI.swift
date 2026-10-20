@@ -217,6 +217,19 @@ enum Private {
         if switchWindow || raise { AXUIElementPerformAction(element, kAXRaiseAction as CFString) }
     }
 
+    /// Alguma janela normal de outro app está por cima de `window`, cobrindo parte dela. Pergunta ao WindowServer (~1 ms),
+    /// não ao app.
+    static func isCovered(_ window: CGWindowID) -> Bool {
+        guard let r = bounds(window),
+              let above = CGWindowListCopyWindowInfo([.optionOnScreenAboveWindow], window) as? [[String: Any]] else { return false }
+        return above.contains { w in
+            guard (w[kCGWindowLayer as String] as? Int) == 0, (w[kCGWindowOwnerPID as String] as? pid_t) != getpid(),
+                  let d = w[kCGWindowBounds as String], let b = CGRect(dictionaryRepresentation: d as! CFDictionary) else { return false }
+            let i = b.intersection(r)
+            return !i.isNull && i.width > 2 && i.height > 2  // a fatia de 1 pt de uma estacionada não conta
+        }
+    }
+
     /// Evento sintético que o WindowServer entende como "torne esta janela key" (layout do yabai).
     private static func makeKeyWindow(_ psn: UnsafeMutablePointer<ProcessSerialNumber>, _ window: CGWindowID) {
         guard let postEvent else { return }
@@ -238,12 +251,16 @@ enum Private {
 final class FocusController {
     private let queue = DispatchQueue(label: "niri.focus", qos: .userInteractive)
     private let lock = NSLock()
-    private var latest: (pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool)?
+    private typealias Request = (pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool)
+    private var latest: Request?
     private var scheduled = false
+    /// Conta os pedidos: a conferência da subida de um pedido velho não mexe em nada.
+    private var generation = 0
 
     func request(pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool) {
         lock.lock()
         latest = (pid, window, element, switchWindow, raise)
+        generation += 1
         let needsDrain = !scheduled
         scheduled = true
         lock.unlock()
@@ -252,12 +269,28 @@ final class FocusController {
 
     private func drain() {
         lock.lock()
-        let req = latest
+        let req = latest, gen = generation
         latest = nil
         scheduled = false
         lock.unlock()
         guard let req else { return }
         Private.focus(pid: req.pid, window: req.window, element: req.element, switchWindow: req.switchWindow, raise: req.raise)
+        if req.raise { confirmRaised(req, gen, tries: 2) }
+    }
+
+    /// O AXRaise logo depois do setFront às vezes chega antes de o app ficar ativo, e app inativo não sobe janela: o
+    /// Discord ganhou o teclado e ficou embaixo do Steam fixado (visto no uso em 2026-10-20). Confere pelo WindowServer
+    /// 80 ms depois e sobe de novo, até duas vezes, se nenhum pedido novo chegou.
+    private func confirmRaised(_ req: Request, _ gen: Int, tries: Int) {
+        queue.asyncAfter(deadline: .now() + 0.08) {
+            self.lock.lock()
+            let current = self.generation == gen
+            self.lock.unlock()
+            guard current, Private.isCovered(req.window) else { return }
+            log("foco: janela \(req.window) ainda coberta 80 ms depois de subir; subindo de novo")
+            AXUIElementPerformAction(req.element, kAXRaiseAction as CFString)
+            if tries > 1 { self.confirmRaised(req, gen, tries: tries - 1) }
+        }
     }
 }
 
