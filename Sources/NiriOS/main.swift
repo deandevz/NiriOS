@@ -82,7 +82,9 @@ guard trusted else {
 let config = Config.load()
 
 if args.contains("--list") {
-    for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+    for app in NSWorkspace.shared.runningApplications {
+        let helper = WindowManager.owner(of: app).processIdentifier != app.processIdentifier
+        guard app.activationPolicy == .regular || helper else { continue }
         let el = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(el, Float(config.axTimeout))
         let r = AppWorker.readWindows(app: el, timeout: Float(config.axTimeout))
@@ -90,7 +92,9 @@ if args.contains("--list") {
         print("\(app.localizedName ?? "?") (pid \(app.processIdentifier))")
         for w in windows {
             let f = w.frame
-            let status = w.uncertain ? "sem resposta" : w.skipReason.map { "fora: \($0)" } ?? "na fita"
+            let status = w.uncertain ? "sem resposta" : w.skipReason.map { "fora: \($0)" }
+                ?? (w.standard && !helper ? "na fita" : w.standard || w.document ? "solta (na fita com a regra tiling)"
+                    : w.closable ? "solta (\(w.kindReason!))" : "fora: \(w.kindReason!)")
             print(String(format: "  %6u  %5.0f,%5.0f  %5.0fx%-5.0f  %@  \"%@\"", w.id, f.minX, f.minY, f.width, f.height,
                          status, String(w.title.prefix(50))))
         }
@@ -111,7 +115,7 @@ let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow":
                                "stack-left": .consumeOrExpelLeft, "stack-right": .consumeOrExpelRight,
                                "taller": .growHeight, "shorter": .shrinkHeight, "up": .focusUp, "down": .focusDown,
                                "full": .toggleFullWidth, "desktop": .toggleDesktop, "clipboard": .clipboard,
-                               "screenshot": .screenshot]
+                               "screenshot": .screenshot, "float": .toggleFloating, "layer": .focusFloating]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
 // `wait`: um passo sem ação (ex.: o painel do Option+V aberto, que qualquer outro atalho fecha).
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action?? in

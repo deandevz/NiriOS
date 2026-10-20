@@ -7,15 +7,30 @@ struct WindowInfo {
     let element: AXUIElement
     let frame: CGRect
     let title: String
-    let subrole: String
-    /// nil = entra na fita. Senão, o motivo de ficar de fora (aparece no --list).
+    let role: String, subrole: String
+    /// O que tira a janela da fita, nem regra nem atalho contornam (minimizada, tela cheia, tamanho fixo): o motivo, que
+    /// aparece no --list. nil = pode ficar na fita.
     let skipReason: String?
     /// O app não respondeu direito sobre esta janela. Não dá pra concluir nada: quem está na fita
     /// continua, quem não está não entra.
     let uncertain: Bool
     /// Em tela cheia nativa (num Space à parte).
     let fullScreen: Bool
-    var tileable: Bool { skipReason == nil && !uncertain }
+    /// Janela comum (AXWindow com AXStandardWindow): entra na fita sozinha.
+    let standard: Bool
+    /// Fora do padrão, mas com botão de minimizar ou de zoom: a janela principal de um app que monta a dele do próprio
+    /// jeito (a do Premiere é AXLayoutArea com AXFloatingWindow, medido em 2026-10-20). Solta, ou na fita com a regra.
+    let document: Bool
+    /// Fora do padrão, com botão de fechar: diálogo ou painel (Informações do Finder, cores). Solta. Sem nenhum botão
+    /// (popup, alerta, sheet), fica de fora.
+    let closable: Bool
+    /// Pode ficar na fita (ou solta).
+    var manageable: Bool { skipReason == nil && !uncertain }
+    var tileable: Bool { manageable && standard }
+    /// Fora da fita pelo tipo: o motivo, pro --list.
+    var kindReason: String? {
+        standard ? nil : role != kAXWindowRole ? "role \(role)" : "subrole \(subrole)"
+    }
 }
 
 struct ScanResult {
@@ -83,8 +98,13 @@ final class AppWorker {
     /// Modo de teste: aceita painéis flutuantes também.
     private let anySubrole: Bool
 
-    init(pid: pid_t, name: String, bundleID: String?, timeout: Double, anySubrole: Bool = false) {
+    /// Processo auxiliar (ver `WindowManager.owner`): o renderer do Chromium não responde à Acessibilidade (-25204) e não
+    /// tem janela, então a falha não vai pro log.
+    private let quiet: Bool
+
+    init(pid: pid_t, name: String, bundleID: String?, timeout: Double, anySubrole: Bool = false, quiet: Bool = false) {
         self.anySubrole = anySubrole
+        self.quiet = quiet
         self.pid = pid
         self.name = name
         self.bundleID = bundleID
@@ -122,7 +142,7 @@ final class AppWorker {
         if err != .success && err != .notificationAlreadyRegistered {
             if attempt < 12 {
                 queue.asyncAfter(deadline: .now() + 0.25) { self.createObserver(attempt: attempt + 1) }
-            } else {
+            } else if !quiet {
                 log("\(name): sem eventos de Acessibilidade (erro \(err.rawValue))")
             }
             return
@@ -248,14 +268,21 @@ final class AppWorker {
 
             let reason: String? =
                 hidden ? "app oculto" :
-                role != kAXWindowRole ? "role \(role)" :
-                (subrole != kAXStandardWindowSubrole && !anySubrole) ? "subrole \(subrole)" :
                 minimized ? "minimizada" :
                 fullScreen ? "tela cheia nativa" :
                 !settable.boolValue ? "tamanho fixo" :
                 (size.width < 50 || size.height < 50) ? "pequena demais" : nil
-            out.append(WindowInfo(id: id, element: el, frame: CGRect(origin: pos, size: size),
-                                  title: title, subrole: subrole, skipReason: reason, uncertain: uncertain, fullScreen: fullScreen))
+            let standard = anySubrole || role == kAXWindowRole && subrole == kAXStandardWindowSubrole
+            // Os botões só da janela fora do padrão (diálogo, painel): uma ida e volta a mais, e só pra elas.
+            var raw2: CFArray?
+            if !standard {
+                AXUIElementCopyMultipleAttributeValues(el, ["AXCloseButton", "AXMinimizeButton", "AXZoomButton"] as CFArray,
+                                                       AXCopyMultipleAttributeOptions(rawValue: 0), &raw2)
+            }
+            let buttons = ((raw2 as? [AnyObject]) ?? []).map { CFGetTypeID($0) == AXUIElementGetTypeID() } + [false, false, false]
+            out.append(WindowInfo(id: id, element: el, frame: CGRect(origin: pos, size: size), title: title, role: role,
+                                  subrole: subrole, skipReason: reason, uncertain: uncertain, fullScreen: fullScreen,
+                                  standard: standard, document: buttons[1] || buttons[2], closable: buttons[0]))
         }
         return ScanResult(windows: out, focused: focused)
     }
@@ -344,7 +371,8 @@ final class AppWorker {
     ///   limite dela (`minSizes`, 0 na direção em que ela obedeceu), e o layout passa a respeitar.
     /// Lido depois de assentar, não durante: Electron aplica o tamanho de forma assíncrona,
     /// e uma leitura logo após o set mostraria o tamanho velho como se fosse recusa.
-    func verifyPlacement(completion: @escaping (_ fixed: Int, _ minSizes: [(CGWindowID, CGSize)]) -> Void) {
+    /// `skip`: as soltas, que a pessoa arrasta e redimensiona (o lugar delas vem do WindowServer; ver `WindowManager.windowEvent`).
+    func verifyPlacement(skip: Set<CGWindowID>, completion: @escaping (_ fixed: Int, _ minSizes: [(CGWindowID, CGSize)]) -> Void) {
         queue.async {
             self.lock.lock()
             let screen = self.clip
@@ -352,7 +380,7 @@ final class AppWorker {
             self.lock.unlock()
             var fixed = 0
             var minSizes: [(CGWindowID, CGSize)] = []
-            for (id, r) in self.requested where !detached.contains(id) {
+            for (id, r) in self.requested where !detached.contains(id) && !skip.contains(id) {
                 guard let el = self.elements[id],
                       let p = AX.point(AX.copy(el, kAXPositionAttribute)),
                       let s = AX.size(AX.copy(el, kAXSizeAttribute)) else { continue }

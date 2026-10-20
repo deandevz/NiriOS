@@ -40,6 +40,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         tabs.addTabViewItem(tab("Recursos", "switch.2", height: 420, FeaturesTab(panel: self)))
         tabs.addTabViewItem(tab("Atalhos", "keyboard", height: 290, ShortcutsTab(panel: self)))
         tabs.addTabViewItem(tab("Workspaces", "rectangle.split.3x1", height: 470, WorkspacesTab(panel: self)))
+        tabs.addTabViewItem(tab("Janelas", "macwindow.on.rectangle", height: 470, WindowsTab(panel: self)))
         tabs.addTabViewItem(tab("Papel de parede", "photo", height: 520, WallpaperTab(panel: self)))
         tabs.addTabViewItem(tab("Borda", "square.dashed", height: 360, BorderTab(panel: self)))
         tabs.addTabViewItem(tab("Geral", "gearshape", height: 400, GeneralTab(panel: self)))
@@ -118,6 +119,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         guard Config.save(["shortcuts": overridden.isEmpty ? nil : overridden,
                            "workspaces": workspaces as? [String] == ["1", "2", "3", "4"] ? nil : workspaces,
+                           "tiling": m.tiling.isEmpty ? nil : m.tiling, "floating": m.floating.isEmpty ? nil : m.floating,
                            "borderColor": m.accent ? nil : m.color.hex,
                            "borderWidth": m.width == 3 ? nil : m.width,
                            "ghostBorderColor": nil, "ghostBorderWidth": nil,  // os nomes de antes
@@ -260,14 +262,48 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func chooseApp(for name: String) {
+        chooseApp { [weak self] in self?.addApp(bundleID: $0, name: $1, to: name) }
+    }
+
+    /// Um app escolhido em /Applications: o bundle id e o nome.
+    private func chooseApp(_ done: @escaping (String?, String) -> Void) {
         guard let window else { return }
         let p = NSOpenPanel()
         p.allowedContentTypes = [.application]
         p.directoryURL = URL(fileURLWithPath: "/Applications")
-        p.beginSheetModal(for: window) { [weak self] r in
+        p.beginSheetModal(for: window) { r in
             guard r == .OK, let url = p.url else { return }
-            self?.addApp(bundleID: Bundle(url: url)?.bundleIdentifier, name: url.deletingPathExtension().lastPathComponent, to: name)
+            done(Bundle(url: url)?.bundleIdentifier, url.deletingPathExtension().lastPathComponent)
         }
+    }
+
+    // MARK: Janelas
+
+    /// Vai pelo bundle id, numa lista só (`tiling` ou `floating`): entrar numa tira da outra.
+    func addRule(bundleID: String?, name app: String, tiling: Bool) {
+        model.tiling.removeAll { Self.isRule($0, of: app, bundleID: bundleID) }
+        model.floating.removeAll { Self.isRule($0, of: app, bundleID: bundleID) }
+        if tiling { model.tiling.append(bundleID ?? app) } else { model.floating.append(bundleID ?? app) }
+        scheduleSave()
+    }
+
+    func removeRule(_ rule: String, tiling: Bool) {
+        if tiling { model.tiling.removeAll { $0 == rule } } else { model.floating.removeAll { $0 == rule } }
+        scheduleSave()
+    }
+
+    func chooseRuleApp(tiling: Bool) {
+        chooseApp { [weak self] in self?.addRule(bundleID: $0, name: $1, tiling: tiling) }
+    }
+
+    /// Os apps abertos que essa lista ainda não pega.
+    func runningApps(notIn rules: [String]) -> [(bundleID: String?, name: String, ref: AppRef)] {
+        NSWorkspace.shared.runningApplications.compactMap { a in
+            guard a.activationPolicy == .regular, a.processIdentifier != getpid(), let name = a.localizedName,
+                  !appMatches(rules, name: name, bundleID: a.bundleIdentifier) else { return nil }
+            return (a.bundleIdentifier, name, app(a.bundleIdentifier ?? name))
+        }
+        .sorted { $0.ref.name.localizedStandardCompare($1.ref.name) == .orderedAscending }
     }
 
     /// Uma regra de `apps` (bundle id, nome ou começo do nome com *) e o app dela.
@@ -385,6 +421,9 @@ struct AppRef {
 @Observable final class SettingsModel {
     var shortcuts: [Action: [Shortcut]] = [:]
     var workspaces: [WorkspaceRule] = []
+    /// As regras `tiling` e `floating` do config.
+    var tiling: [String] = []
+    var floating: [String] = []
     /// O workspace aberto na aba Workspaces.
     var selected: String?
     /// Borda na cor de destaque do sistema; senão, `color`.
@@ -420,6 +459,8 @@ struct AppRef {
     func load(_ c: Config) {
         shortcuts = c.shortcuts
         workspaces = c.workspaces
+        tiling = c.tiling
+        floating = c.floating
         selected = c.workspaces.first?.name
         accent = c.borderColor == nil
         if let col = c.borderColor { color = col }
@@ -456,6 +497,8 @@ extension Action {
         case .consumeOrExpelRight: "Empilhar à direita / separar"
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
+        case .toggleFloating: "Soltar da fita / prender na fita"
+        case .focusFloating: "Foco entre a fita e as soltas"
         case .clipboard: "Histórico do que foi copiado"
         case .screenshot: "Print de uma área da tela"
         case .workspace: "Ir pro workspace"
@@ -689,6 +732,62 @@ private struct WorkspaceDetail: View {
         if !panel.renameWorkspace(name, to: draft) {
             NSSound.beep()  // vazio ou repetido
             draft = name
+        }
+    }
+}
+
+/// Os atalhos de soltar e prender, e os apps que fogem da regra de sempre (janela comum na fita, diálogo de fora).
+private struct WindowsTab: View {
+    let panel: PanelController
+
+    var body: some View {
+        Form {
+            Section("Atalhos") {
+                ShortcutRow(panel: panel, action: .toggleFloating)
+                ShortcutRow(panel: panel, action: .focusFloating)
+            }
+            RulesSection(panel: panel, tiling: true)
+            RulesSection(panel: panel, tiling: false)
+        }
+        .disabledFeature(.tiling, panel.model)
+    }
+}
+
+private struct RulesSection: View {
+    let panel: PanelController
+    let tiling: Bool
+
+    var body: some View {
+        let rules = tiling ? panel.model.tiling : panel.model.floating
+        Section {
+            ForEach(rules, id: \.self) { rule in
+                let app = panel.app(rule)
+                HStack {
+                    AppIcon(app: app, size: 20)
+                    Text(app.name)
+                    Spacer()
+                    Button { panel.removeRule(rule, tiling: tiling) } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(.tertiary).help("Tirar")
+                }
+            }
+            Menu {
+                ForEach(panel.runningApps(notIn: rules), id: \.name) { r in
+                    Button { panel.addRule(bundleID: r.bundleID, name: r.name, tiling: tiling) } label: {
+                        Label { Text(r.ref.name) } icon: { Image(nsImage: r.ref.icon) }
+                    }
+                }
+                Divider()
+                Button("Outro…") { panel.chooseRuleApp(tiling: tiling) }
+            } label: {
+                Label("Adicionar app", systemImage: "plus")
+            }
+            .menuStyle(.button).buttonStyle(.borderless).fixedSize()
+        } header: {
+            Text(tiling ? "Sempre na fita" : "Sempre soltas")
+        } footer: {
+            Text(tiling ? "Mesmo com a janela fora do padrão, como a do Premiere e a do Steam. Diálogos continuam de fora."
+                        : "As janelas abrem soltas, por cima da fita, no workspace delas.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

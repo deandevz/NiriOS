@@ -28,6 +28,7 @@ Windows live in columns on an endless horizontal strip. Opening a window never s
 - **Ghost resize.** While a column changes size, a frosted glass with the app's icon takes its place. The real window comes back once it has finished redrawing, so you never see a stretched or half-drawn frame, Electron apps included.
 - **Workspaces that slide.** One strip per workspace, side by side. Apps can be pinned to a workspace, and a SketchyBar setup made for AeroSpace works with one line of config.
 - **Show desktop.** Windows slide out through the nearest edge and come back with the same key.
+- **Floating windows.** `⌥ ⇧ F` pulls a window out of the strip so it floats above it, or puts it back. A floating window belongs to its workspace and leaves with it. Apps whose windows the strip skips (Premiere, Steam) can be tiled with one line of config, and any app can be set to always open floating.
 
 <p align="center">
   <img src="docs/media/columns.gif" width="840" alt="Moving a column, stacking two windows in one column and showing the desktop">
@@ -164,6 +165,8 @@ The terminal you run it from needs Accessibility permission. `Ctrl+C` brings eve
 | `⌥ 1` to `⌥ 4` | Go to a workspace |
 | `⌥ ⇧ 1` to `⌥ ⇧ 4` | Send the focused window to a workspace |
 | `⌥ D` | Show the desktop; press again to bring the windows back |
+| `⌥ ⇧ F` | Float the focused window above the strip, or put it back in the strip. A window outside the strip (a dialog, Steam) joins it |
+| `⌥ ⇥` | Move focus between the strip and the floating windows of the workspace, bringing that window to the front |
 | `⌥ V` | Clipboard history |
 | `⌥ S` | Screenshot of an area, with drawing tools |
 
@@ -184,6 +187,8 @@ Click the menu bar icon to open the settings panel, or edit `~/.config/niri-os/c
     { "name": "2", "apps": ["Calendar", "com.hnc.Discord"] },
     { "name": "T", "apps": ["com.github.wez.wezterm"], "open": "WezTerm" }
   ],
+  "tiling": ["Steam", "com.adobe.PremierePro*"],
+  "floating": ["Calculator"],
   "shortcuts": { "toggleDesktop": ["ctrl+option+d"] },
   "onWorkspaceChange": "sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE",
   "features": { "clipboard": false }
@@ -202,20 +207,22 @@ Click the menu bar icon to open the settings panel, or edit `~/.config/niri-os/c
 | `resizeStyle` | `"ghost"` | `ghost`, `photos` (needs Screen Recording) or `live` |
 | `borderColor`, `borderWidth` | system accent, `3` | `#RRGGBB`, `#RRGGBBAA` or `accent`; width `0` hides the border |
 | `workspaces` | `1` to `4` | In screen order; each can set `apps`, `open` (app to launch when empty), `key` and `moveKey` |
+| `tiling` | none | Apps whose new windows always join the strip, even when the strip would skip them (a non-standard main window like Premiere's, or a helper process like Steam's). Dialogs stay out |
+| `floating` | none | Apps whose new windows always open floating, above the strip |
 | `onWorkspaceChange` | none | Shell command run on every switch, with the name in `$NIRI_WORKSPACE` |
 | `wallpaper`, `wallpaperEffect` | none | Image or video (`.mp4`, `.mov`, `.m4v`); image effects `dither`, `halftone`, `scanlines`, `ascii` |
 | `screenshotFolder` | the macOS screenshot folder | Where `⌘ S` saves a screenshot |
 | `shortcuts` | | A list per action; `[]` disables it |
 | `features` | all on | `tiling`, `border`, `clipboard`, `screenshot`, `wallpaper`; `false` turns one off |
 
-Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `clipboard` and `screenshot`. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
+Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `toggleFloating`, `focusFloating`, `clipboard` and `screenshot`. Apps in `tiling`, `floating` and `workspaces` match by name or bundle id, and a trailing `*` matches the start of the name. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
 
 ## Limitations
 
 NiriOS is young. Expect rough edges, and please open an issue when you hit one.
 
 - Only the main display is managed. Screenshots cover the display under the mouse.
-- No floating windows yet: every regular window joins the strip.
+- Floating windows don't stay on top: the focused window comes to the front. Keeping a window always on top needs SIP partly off, like yabai's scripting addition.
 - Dialogs and sheets float, but aren't centered over their parent window yet.
 - An app whose minimum width is wider than its column overlaps the neighbor.
 - Windows of different apps can be one frame apart during an animation, since each app applies frames on its own queue.

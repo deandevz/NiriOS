@@ -28,6 +28,7 @@ As janelas ficam em colunas numa fita horizontal sem fim. Abrir uma janela nunca
 - **Resize fantasma.** Enquanto a coluna muda de largura, um vidro fosco com o ícone do app anda no lugar dela. A janela real volta quando terminou de redesenhar, então você nunca vê um quadro esticado ou pela metade, nem em app Electron.
 - **Workspaces que deslizam.** Uma fita por workspace, lado a lado. Dá para fixar apps num workspace, e uma SketchyBar feita para o AeroSpace funciona com uma linha de config.
 - **Mostrar a mesa.** As janelas saem pela borda mais próxima e voltam com a mesma tecla.
+- **Janelas soltas.** `⌥ ⇧ F` solta a janela da fita, por cima dela, ou prende de volta. A solta é do workspace e sai junto com ele. App cuja janela a fita pula (Premiere, Steam) entra na fita com uma linha de config, e qualquer app pode abrir sempre solto.
 
 <p align="center">
   <img src="docs/media/columns.gif" width="840" alt="Movendo uma coluna, empilhando duas janelas numa coluna e mostrando a mesa">
@@ -164,6 +165,8 @@ O terminal que roda o NiriOS precisa da permissão de Acessibilidade. `Ctrl+C` d
 | `⌥ 1` a `⌥ 4` | Vai para um workspace |
 | `⌥ ⇧ 1` a `⌥ ⇧ 4` | Manda a janela focada para um workspace |
 | `⌥ D` | Mostra a mesa; de novo as janelas voltam |
+| `⌥ ⇧ F` | Solta a janela focada por cima da fita, ou prende de volta. Janela de fora da fita (um diálogo, o Steam) entra nela |
+| `⌥ ⇥` | Foco entre a fita e as janelas soltas do workspace, trazendo a janela pra frente |
 | `⌥ V` | Histórico do clipboard |
 | `⌥ S` | Print de uma área, com ferramentas de desenho |
 
@@ -184,6 +187,8 @@ Clique no ícone da barra de menu para abrir o painel, ou edite `~/.config/niri-
     { "name": "2", "apps": ["Calendar", "com.hnc.Discord"] },
     { "name": "T", "apps": ["com.github.wez.wezterm"], "open": "WezTerm" }
   ],
+  "tiling": ["Steam", "com.adobe.PremierePro*"],
+  "floating": ["Calculadora"],
   "shortcuts": { "toggleDesktop": ["ctrl+option+d"] },
   "onWorkspaceChange": "sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE",
   "features": { "clipboard": false }
@@ -202,20 +207,22 @@ Clique no ícone da barra de menu para abrir o painel, ou edite `~/.config/niri-
 | `resizeStyle` | `"ghost"` | `ghost`, `photos` (precisa da Gravação de Tela) ou `live` |
 | `borderColor`, `borderWidth` | cor de destaque, `3` | `#RRGGBB`, `#RRGGBBAA` ou `accent`; largura `0` tira a borda |
 | `workspaces` | `1` a `4` | Na ordem da tela; cada um pode ter `apps`, `open` (app que abre quando ele está vazio), `key` e `moveKey` |
+| `tiling` | nenhum | Apps cujas janelas novas sempre entram na fita, mesmo as que a fita pularia (janela principal fora do padrão, como a do Premiere, ou de um processo auxiliar, como a do Steam). Diálogos continuam de fora |
+| `floating` | nenhum | Apps cujas janelas novas abrem sempre soltas, por cima da fita |
 | `onWorkspaceChange` | nenhum | Comando de shell rodado a cada troca, com o nome em `$NIRI_WORKSPACE` |
 | `wallpaper`, `wallpaperEffect` | nenhum | Imagem ou vídeo (`.mp4`, `.mov`, `.m4v`); efeitos de imagem `dither`, `halftone`, `scanlines`, `ascii` |
 | `screenshotFolder` | a pasta de prints do macOS | Onde o `⌘ S` salva o print |
 | `shortcuts` | | Uma lista por ação; `[]` desliga |
 | `features` | tudo ligado | `tiling`, `border`, `clipboard`, `screenshot`, `wallpaper`; `false` desliga |
 
-Atalho é modificador (`ctrl`, `option`, `shift`, `cmd`) mais tecla, como `"option+shift+left"`. Ações: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `clipboard` e `screenshot`. Para workspaces clicáveis numa barra, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <nome>` troca pela linha de comando.
+Atalho é modificador (`ctrl`, `option`, `shift`, `cmd`) mais tecla, como `"option+shift+left"`. Ações: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `toggleFloating`, `focusFloating`, `clipboard` e `screenshot`. Os apps de `tiling`, `floating` e `workspaces` valem pelo nome ou pelo bundle id, e um `*` no fim vale como começo do nome. Para workspaces clicáveis numa barra, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <nome>` troca pela linha de comando.
 
 ## Limitações
 
 O NiriOS é novo. Espere arestas, e abra uma issue quando achar uma.
 
 - Só a tela principal é gerenciada. O print é da tela onde está o mouse.
-- Ainda não tem janela flutuante: toda janela comum entra na fita.
+- Janela solta não fica sempre por cima: a janela focada vem para a frente. Deixar uma janela sempre na frente exige o SIP parcialmente desligado, como a scripting addition do yabai.
 - Diálogos e sheets flutuam, mas ainda não ficam centralizados sobre a janela dona.
 - App com largura mínima maior que a coluna invade a vizinha.
 - Janelas de apps diferentes podem ficar um quadro desencontradas durante a animação, porque cada app aplica os quadros na própria fila.

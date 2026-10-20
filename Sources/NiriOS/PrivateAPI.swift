@@ -204,7 +204,9 @@ enum Private {
     /// `switchWindow`: o app considera outra janela como a focada. Só aí manda o evento de "make key"
     /// e o AXRaise. Sem troca, o setFront já devolve o foco à janela certa, e o make key a mais faz o
     /// app redesenhar de novo: o WhatsApp fica 70 ms sem responder em vez de 25 (medido).
-    static func focus(pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool) {
+    /// `raise`: sobe a janela mesmo sem troca (o AXRaise sozinho), pra ela passar por cima de uma solta. Logo depois do
+    /// setFront, sobe em 10 de 10 vezes, aos 18 ms (mediana; medido em 2026-10-20).
+    static func focus(pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool = false) {
         var psn = ProcessSerialNumber()
         if let getPSN, let setFront, getPSN(pid, &psn) == noErr {
             _ = setFront(&psn, window, 0x200)  // kCPSUserGenerated
@@ -212,7 +214,7 @@ enum Private {
         } else {
             NSRunningApplication(processIdentifier: pid)?.activate()
         }
-        if switchWindow { AXUIElementPerformAction(element, kAXRaiseAction as CFString) }
+        if switchWindow || raise { AXUIElementPerformAction(element, kAXRaiseAction as CFString) }
     }
 
     /// Evento sintético que o WindowServer entende como "torne esta janela key" (layout do yabai).
@@ -236,12 +238,12 @@ enum Private {
 final class FocusController {
     private let queue = DispatchQueue(label: "niri.focus", qos: .userInteractive)
     private let lock = NSLock()
-    private var latest: (pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool)?
+    private var latest: (pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool)?
     private var scheduled = false
 
-    func request(pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool) {
+    func request(pid: pid_t, window: CGWindowID, element: AXUIElement, switchWindow: Bool, raise: Bool) {
         lock.lock()
-        latest = (pid, window, element, switchWindow)
+        latest = (pid, window, element, switchWindow, raise)
         let needsDrain = !scheduled
         scheduled = true
         lock.unlock()
@@ -255,7 +257,7 @@ final class FocusController {
         scheduled = false
         lock.unlock()
         guard let req else { return }
-        Private.focus(pid: req.pid, window: req.window, element: req.element, switchWindow: req.switchWindow)
+        Private.focus(pid: req.pid, window: req.window, element: req.element, switchWindow: req.switchWindow, raise: req.raise)
     }
 }
 

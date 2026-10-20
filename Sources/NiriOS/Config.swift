@@ -6,27 +6,34 @@ import NiriCore
 ///
 ///     { "gap": 12, "topPadding": 0, "defaultColumnWidth": 0.5, "widthStep": 0.1, "stiffness": 800,
 ///       "shortcuts": { "grow": ["option+=", "ctrl+option+up"] }, "borderColor": "#FF8800",
-///       "workspaces": ["1", "2", { "name": "T", "apps": ["WezTerm"] }] }
+///       "workspaces": ["1", "2", { "name": "T", "apps": ["WezTerm"] }],
+///       "tiling": ["Steam", "com.adobe.PremierePro*"], "floating": ["Calculadora"] }
 enum ResizeStyle: String { case photos, ghost, live }
+
+/// Regra de app: o nome como no Dock ou o bundle id, sem diferença de maiúscula. Terminando em * vale como começo do nome
+/// ("Adobe Premiere*" pega todas as versões).
+func appMatches(_ rules: [String], name: String, bundleID: String?) -> Bool {
+    rules.contains { rule in
+        [name, bundleID].compactMap { $0 }.contains {
+            rule.hasSuffix("*") ? $0.lowercased().hasPrefix(rule.dropLast().lowercased()) : $0.caseInsensitiveCompare(rule) == .orderedSame
+        }
+    }
+}
+
+/// Onde as janelas novas de um app vão por regra do config (`tiling` e `floating`).
+enum WindowRule { case tile, float }
 
 /// Um workspace do config. Os atalhos dele ficam em `Config.shortcuts`, como `.workspace(name)` e
 /// `.moveToWorkspace(name)`.
 struct WorkspaceRule: Equatable {
     var name: String
-    /// Apps cujas janelas novas abrem aqui: o nome como no Dock ou o bundle id, sem diferença de maiúscula.
-    /// Terminando em * vale como começo do nome ("Adobe Premiere*" pega todas as versões).
+    /// Apps cujas janelas novas abrem aqui (ver `appMatches`).
     var apps: [String] = []
     /// App aberto (`open -a`) quando o atalho traz pra cá e não tem janela, como o
     /// `alt-t = ['workspace T', 'exec-and-forget open -a WezTerm']` do AeroSpace.
     var open: String?
 
-    func matches(app name: String, bundleID: String?) -> Bool {
-        apps.contains { rule in
-            [name, bundleID].compactMap { $0 }.contains {
-                rule.hasSuffix("*") ? $0.lowercased().hasPrefix(rule.dropLast().lowercased()) : $0.caseInsensitiveCompare(rule) == .orderedSame
-            }
-        }
-    }
+    func matches(app name: String, bundleID: String?) -> Bool { appMatches(apps, name: name, bundleID: bundleID) }
 }
 
 struct Config {
@@ -66,6 +73,10 @@ struct Config {
     var wallpaperEffect = WallpaperEffect.none
     /// Na ordem em que ficam lado a lado. Sem a chave no arquivo: 1 a 4.
     var workspaces: [WorkspaceRule] = []
+    /// Apps que vão pra fita mesmo com a janela principal fora do padrão (o Premiere) ou sendo de um processo auxiliar (a
+    /// do Steam é do Steam Helper), e apps cujas janelas abrem soltas. Só as janelas novas; diálogo continua de fora.
+    var tiling: [String] = []
+    var floating: [String] = []
     /// Comando (sh) rodado a cada troca de workspace e ao abrir, com o nome em NIRI_WORKSPACE. Pra SketchyBar:
     /// `sketchybar --trigger niri_workspace_change FOCUSED_WORKSPACE=$NIRI_WORKSPACE`.
     var onWorkspaceChange: String?
@@ -91,6 +102,7 @@ struct Config {
         .moveColumnLeft: ["option+shift+,", "option+shift+left"], .moveColumnRight: ["option+shift+.", "option+shift+right"],
         .consumeOrExpelLeft: ["option+cmd+,"], .consumeOrExpelRight: ["option+cmd+."],
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"], .clipboard: ["option+v"], .screenshot: ["option+s"],
+        .toggleFloating: ["option+shift+f"], .focusFloating: ["option+tab"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
     /// O padrão de uma ação. Workspace: Option+<nome> pra ir e Option+Shift+<nome> pra mandar a janela, se o
@@ -168,6 +180,13 @@ struct Config {
         }
         if c.workspaces.isEmpty { c.workspaces = [WorkspaceRule(name: "1")] }  // "workspaces": [] = um só, sem atalho
         c.onWorkspaceChange = (obj["onWorkspaceChange"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        for key in ["tiling", "floating"] where obj[key] != nil && !(obj[key] is [String]) {
+            warn("\(key) precisa ser uma lista de apps, como [\"Steam\"]")
+        }
+        c.tiling = obj["tiling"] as? [String] ?? []
+        let floating = obj["floating"] as? [String] ?? []
+        for r in floating where c.tiling.contains(r) { warn("'\(r)' está em tiling e em floating; vale tiling") }
+        c.floating = floating.filter { !c.tiling.contains($0) }
         // O mesmo atalho em duas ações: vale a primeira, na ordem do painel (os workspaces por último).
         var seen: [Shortcut: Action] = [:]
         for a in Action.allCases + c.workspaces.flatMap({ [Action.workspace($0.name), .moveToWorkspace($0.name)] }) {
@@ -205,7 +224,7 @@ struct Config {
         }
         let known: Set = ["gap", "topPadding", "bottomPadding", "defaultColumnWidth", "widthStep", "widthPresets", "heightPresets", "resizeStyle", "stiffness", "axTimeout",
                           "centerFocusedColumn", "shortcuts", "borderColor", "borderWidth", "ghostBorderColor", "ghostBorderWidth", "wallpaper", "wallpaperEffect", "workspaces", "onWorkspaceChange",
-                          "screenshotFolder", "features"]
+                          "screenshotFolder", "features", "tiling", "floating"]
         for key in obj.keys where !known.contains(key) { warn("chave desconhecida '\(key)'") }
         if data != nil { log("config carregada de \(path.path)") }
         return c
@@ -227,6 +246,10 @@ struct Config {
     }
 
     func has(_ f: Feature) -> Bool { f.isOn(disabled) }
+
+    func windowRule(app name: String, bundleID: String?) -> WindowRule? {
+        appMatches(tiling, name: name, bundleID: bundleID) ? .tile : appMatches(floating, name: name, bundleID: bundleID) ? .float : nil
+    }
 
     /// A pasta do print: a do config, ou a do print do macOS (`defaults write com.apple.screencapture location`), ou a Mesa.
     var screenshots: URL {

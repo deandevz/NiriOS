@@ -112,6 +112,25 @@ Testado numa janela do WezTerm, conferindo pelo WindowServer (camada na lista de
 
 Ou seja: dá pra fotografar qualquer janela, mas não dá pra esconder, mover ou transformar janela alheia fora do AX. Código de retorno 0 não prova nada.
 
+### Janela flutuante sempre na frente, sem SIP (2026-10-20)
+
+Painéis de dois apps (A e B) se sobrepondo, com a ordem conferida pela lista do WindowServer:
+
+- `SLSSetWindowSubLevel` em janela alheia: 0 e nada muda, como o `SLSSetWindowLevel`. Com a conexão do dono (`SLSGetWindowOwner`): `SLSOrderWindow` dá 268435459 e `SLSSetWindowLevel` dá 0 sem efeito. `SLSTransactionOrderWindow` e `SLSTransactionSetWindowLevel` também não mudam nada. O yabai faz isso de dentro do Dock (`SLSSetWindowSubLevel` na scripting addition).
+- `AXRaise` em janela de app que não está ativo não passa ela por cima da janela do app ativo: 0 em 6 (0 em 7 com apps acessórios). Só sobe entre as janelas do próprio app.
+- Ativar sem subir: `_SLPSSetFrontProcessWithOptions` + make key, sem `AXRaise`, dá o teclado a B e deixa B embaixo de A (5/5 com 0x400, kCPSNoWindows; 3/3 com 0x200). Quem sobe a janela é o `AXRaise`.
+- No mesmo app não dá: trocar a janela focada só com make key falha (0/5), `AXMain` troca mas sobe a janela junto (5/5 por cima), e `AXRaise` na flutuante tira o foco da outra (4/4).
+- "Dança" (ativa o app de A, `AXRaise` em A, devolve o teclado a B com 0x400): A por cima aos 22 ms (mediana), teclado de volta em B aos 31 ms, falhou em 3 de 8 (o `AXRaise` chega antes de A ficar ativo). B perde e ganha o foco no meio, o que fecha menu e popover abertos pelo clique.
+- O aviso 808 do WindowServer (reordenação), pedido pras duas janelas, não chegou (0 em 8).
+
+Sem SA, a flutuante só fica na frente enquanto nada sobe por cima dela. O niri-os consegue não subir as janelas da fita quando foca pelo teclado (de outro app); o clique numa janela da fita sobe ela (o app sobe a própria janela).
+
+### Steam e Premiere fora da fita (2026-10-20)
+
+- Steam: a janela "Steam" é do processo `Steam Helper` (`com.valvesoftware.steam.helper`, filho do Steam, `activationPolicy` acessório), AXStandardWindow sem botões. O niri-os só olha app `.regular`; o processo Steam tem só uma janela 1x1 em -15000.
+- Premiere Pro 2025: a janela principal é role `AXLayoutArea`, subrole `AXFloatingWindow`, com fechar, minimizar e zoom, e tamanho ajustável (o mesmo do yabai #2039 nos Adobe 2024).
+- Os dois aceitam AX rápido: posição com 0,6 ms de mediana nos dois; tamanho 0,7 ms no Steam e 2,8 ms no Premiere (máx 22). Largura mínima: Steam 1010 pt (recusa 1/2 e 1/3), Premiere 864 pt (aceita 1/2, recusa 1/3).
+
 ### Transição do resize por fotos (`TransitionOverlay`, `"resizeStyle": "photos"`)
 
 Nenhum app acompanha uma animação de resize (o WhatsApp faz ~7 tamanhos por segundo, Chromium desenha depois e mostra área em branco, o WezTerm estica o texto antigo). Então, no `Option +/-`, a tela vira nossa, como num compositor:
@@ -180,6 +199,18 @@ Duas ou mais janelas na mesma coluna, uma embaixo da outra (o Discord em cima e 
 - **Medido nos painéis de teste** (4 painéis, 15 ações: juntar, alturas, foco, largura, mover, separar, juntar à direita, mandar pra outro workspace; 2 rodadas): maior intervalo entre ticks 8,4 a 15,6 ms, do app até 16,1 ms, 0 frames com sobreposição, verificação final "tudo no lugar". Escondendo a de baixo no meio da pilha e mostrando de novo: a de cima cresceu com o vidro e a escondida voltou embaixo dela, com `gap` exato. Memória: 10 MB parado, 0% de CPU; pico de 15 MB com dois vidros.
 
 Validado pelo usuário nos apps reais (2026-10-16): empilhar, separar, altura e as duas fases ("ficou ótimo as animações"), e a recusa quando os mínimos não cabem é o comportamento certo. Ainda não conferido: o `Option ↑ ↓` passando pro app fora da pilha. Visto uma vez e não explicado: logo depois de um reinício, o Discord empilhou com o WhatsApp sem o limite de altura dele (aprendido de novo 2 s depois); os dois limites ficaram salvos.
+
+## Janelas soltas (2026-10-20)
+
+`Option Shift F` solta a janela com o teclado da fita (fica por cima dela) ou prende de volta; `Option Tab` passa o foco entre a fita e a solta de cima. Config `tiling` e `floating`: listas de apps (nome ou bundle id, `*` no fim) cujas janelas novas entram sempre na fita ou abrem sempre soltas. Painel: aba Janelas.
+
+- **Modelo.** A solta é do `Layout` do workspace (`floating`, de trás pra frente), com frame e quatro molas (`dx`, `dy`, `dw`, `dh`) pra andar de onde estava. Não rola com a fita; anda com a troca de workspace e com a mesa (sai pela borda mais perto do meio dela) e estaciona com 1 pt como as colunas. `floatingFocused` diz se o foco está na solta de cima; com ele, os atalhos de coluna não fazem nada e `Option ← →` volta pra coluna focada.
+- **Soltar e prender.** Solta na 1ª vez: no meio do lugar da coluna, com no máximo 2/3 da área em cada direção (do tamanho da coluna ela cobriria a fita). Depois, onde ficou da última vez (`Tile.floatingFrame`). Prende numa coluna nova à direita da focada, como no niri, com a largura da lista mais perto da que tinha. O tamanho muda pelo vidro do resize, como o `Option +/-`.
+- **Mouse.** A pessoa arrasta e redimensiona a solta: os avisos 806/807 do WindowServer (os mesmos da borda) dão o frame novo, lido com `SLSGetWindowBounds` (~0,02 ms, sem falar com o app), só com a fita parada. A conferência pós-animação pula as soltas, senão devolvia a janela pro lugar antigo.
+- **Quem entra.** Janela nova entra sozinha se é comum (AXWindow + AXStandardWindow) ou, com regra, se é a principal de um app que monta a dele de outro jeito: role ou subrole fora do padrão, mas com botão de minimizar ou zoom (o Premiere). Diálogo e painel não. Na fita ou solta, continua enquanto nada tira (minimizada, tela cheia, tamanho fixo), mesmo fora do padrão. O atalho numa janela de fora pede ao app dela e ela entra na fita na leitura seguinte, qualquer que seja o tipo.
+- **Processo auxiliar.** A janela do Steam é do `Steam Helper`, app sem Dock, filho do Steam. O niri-os observa app sem Dock só com regra (dele ou do app pai, pelo `kp_eproc.e_ppid`) ou pelo atalho, e com o nome do pai, que é o que a pessoa conhece (`"Steam"` na regra pega o helper). App sem Dock observado só pelo atalho não tem as outras janelas adotadas.
+- **Quem fica na frente.** A janela que o niri-os foca sobe (`AXRaise` logo depois do `setFront`), solta ou da fita, quando o workspace tem solta: `Option Tab` traz uma ou a outra pra frente. Medido com painéis: sobe em 10 de 10, aos 18 ms (mediana, máx 28), com ou sem o make key. A 1ª versão deixava a solta sempre por cima (a fita ganhava o teclado sem subir, o que funciona: 5 de 5), e no uso não serviu: o Steam (1010×930) cobria o WhatsApp, e a pessoa digitava numa janela que não via. Sempre na frente de verdade não dá sem SA (seção "Janela flutuante sempre na frente", acima). Com a focada sempre na frente, a borda continua no nível de cima. Pra deixar a borda de uma janela da fita embaixo de uma solta, ordenar a janela da borda logo acima da do app (`order(.above, relativeTo:)` com a janela de outro app) funciona (medido), mas deixou de ser preciso.
+- **Medido** (painéis de teste, `--pid`): soltar 312 a 366 ms de animação, maior intervalo entre ticks 8,4 ms; prender 396 ms, 8,5 ms; troca de workspace com a solta 417 ms, 10,9 ms; mesa 16,6 ms no pior tick. O vidro sai 76 a 98 ms depois. `frames com sobreposição` do `-v` conta a solta por cima da fita (é o normal dela). Premiere e Steam na fita (`--pid` com `--area` da tela toda): largura, largura total, soltar e prender, tudo no lugar na conferência, maior intervalo 8,4 a 12,3 ms; o 1º frame do Premiere custou 34,6 ms (o resto 6,4).
 
 ## Borda da janela focada (2026-10-16)
 
@@ -495,5 +526,5 @@ swift build -c release
 - Diálogos, sheets e painéis ficam fora da fita (flutuam). Centralizar sobre a janela dona ainda não foi feito.
 - Papel de parede: efeito só em imagem (no vídeo seria um filtro por quadro); render pro tamanho da tela principal, aplicado em todas.
 - Só a tela principal. Com outra tela ao lado, as janelas estacionadas (inclusive as dos outros workspaces) apareceriam nela. Esconder um app (Cmd+H), minimizar ou pôr em tela cheia tira a janela da fita; ao voltar, ela vai pro mesmo workspace, entre as mesmas vizinhas.
-- Sem janela flutuante ainda: o que o AeroSpace deixava flutuando (Finder, Ajustes, Adobe) entra na fita.
+- Janela solta não fica sempre por cima da fita: a janela focada vem pra frente. Sempre na frente precisaria de SA (seção "Janela flutuante sempre na frente").
 - Se o processo morrer sem Ctrl+C, as janelas ficam estacionadas na borda. Rodar de novo (e sair com Ctrl+C) devolve.

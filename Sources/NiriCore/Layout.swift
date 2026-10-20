@@ -37,6 +37,8 @@ public struct Tile {
     /// Menor largura e altura que o app aceita (pt), descobertas quando ele recusa encolher. 0 = sem limite conhecido.
     public internal(set) var minWidth = 0.0
     public internal(set) var minHeight = 0.0
+    /// Onde ficou solta da última vez (ver `Layout.float`), pra voltar pro mesmo lugar.
+    public internal(set) var floatingFrame: CGRect?
     var height: Spring
     /// Deslocamento animado de onde a janela estava quando mudou de coluna ou de lugar na coluna (outra entrou ou saiu):
     /// ela continua no mesmo lugar e tamanho na tela e anda até o novo, como a coluna com o `offset`.
@@ -77,6 +79,27 @@ public struct Column {
     public var minWidth: Double { tiles.map(\.minWidth).max() ?? 0 }
 }
 
+/// Janela solta da fita, por cima dela, como a camada flutuante do niri: é do workspace (sai com ele na troca e com a
+/// mesa), mas não rola com a fita. A pessoa arrasta e redimensiona com o mouse.
+public struct Floating {
+    public let window: WindowID
+    /// Onde fica na tela, sem a troca de workspace e a mesa.
+    public internal(set) var frame: CGRect
+    /// Deslocamento animado de onde estava (a coluna de onde saiu), como o `dx`/`dy`/`dw` das janelas da coluna.
+    var dx: Spring, dy: Spring, dw: Spring, dh: Spring
+
+    func rect(at t: Double) -> CGRect {
+        CGRect(x: frame.minX + dx.value(at: t), y: frame.minY + dy.value(at: t),
+               width: frame.width + dw.value(at: t), height: frame.height + dh.value(at: t))
+    }
+
+    var springs: [Spring] { [dx, dy, dw, dh] }
+
+    mutating func update(_ f: (inout Spring) -> Void) {
+        f(&dx); f(&dy); f(&dw); f(&dh)
+    }
+}
+
 public struct WindowFrame: Equatable {
     public let window: WindowID
     public let rect: CGRect
@@ -107,6 +130,10 @@ public struct Layout {
     /// Deslocamento da fita inteira (pt), pra trocar de workspace (ver `Workspaces`): 0 na tela, ± a largura
     /// da tela fora dela.
     var shift: Spring
+    /// As soltas, de trás pra frente: a última é a de cima (a focada por último).
+    public private(set) var floating: [Floating] = []
+    /// O foco está na solta de cima, e não na coluna focada (que continua guardada pra volta).
+    public private(set) var floatingFocused = false
 
     public init(area: CGRect, bounds: CGRect, config: LayoutConfig) {
         self.area = area
@@ -117,9 +144,16 @@ public struct Layout {
         self.shift = Spring(0, stiffness: config.stiffness)
     }
 
-    public var focusedWindow: WindowID? { focusedIndex.map { columns[$0].tiles[columns[$0].active].window } }
-    public var windows: [WindowID] { columns.flatMap(\.windows) }
-    /// A coluna da janela.
+    public var focusedWindow: WindowID? {
+        floatingFocused ? floating.last?.window : stripFocus.map { columns[$0].tiles[columns[$0].active].window }
+    }
+    /// A coluna focada, se o foco está na fita (e não numa solta): só nela os atalhos de coluna fazem algo.
+    private var stripFocus: Int? { floatingFocused ? nil : focusedIndex }
+    /// As da fita e as soltas.
+    public var windows: [WindowID] { columns.flatMap(\.windows) + floating.map(\.window) }
+    public func contains(_ window: WindowID) -> Bool { index(of: window) != nil || isFloating(window) }
+    public func isFloating(_ window: WindowID) -> Bool { floating.contains { $0.window == window } }
+    /// A coluna da janela (nil se ela está solta).
     public func index(of window: WindowID) -> Int? { columns.firstIndex { $0.windows.contains(window) } }
     /// A coluna da janela e o lugar dela na coluna (0 = a de cima).
     func place(of window: WindowID) -> (column: Int, row: Int)? {
@@ -217,16 +251,25 @@ public struct Layout {
             columns[i].offset.displace(by: -(c.width.target + config.gap), at: t)
         }
         if focus || focusedIndex == nil { focusedIndex = k } else if let f = focusedIndex, k <= f { focusedIndex = f + 1 }
+        if focus { floatingFocused = false }
         retarget(at: t)
     }
 
     /// Tira a janela. Se era a focada, o foco vai pra vizinha da direita (ou da esquerda, se era a última). Numa coluna
     /// com outras, só ela sai: o foco vai pra de baixo (ou a de cima) e as outras crescem. Devolve uma coluna só com ela,
-    /// com a largura da de onde saiu.
+    /// com a largura da de onde saiu. Solta, só sai (nil); se era a focada, o foco vai pra solta de baixo, ou pra fita.
     @discardableResult
     public mutating func remove(_ window: WindowID, at t: Double) -> Column? {
+        if let i = floating.firstIndex(where: { $0.window == window }) {
+            floating.remove(at: i)
+            if floating.isEmpty { floatingFocused = false }
+            return nil
+        }
         guard let (k, r) = place(of: window) else { return nil }
-        guard columns[k].tiles.count > 1 else { return removeColumn(k, at: t) }
+        guard columns[k].tiles.count > 1 else {
+            defer { if columns.isEmpty && !floating.isEmpty { floatingFocused = true } }  // a fita esvaziou: o foco vai pra solta
+            return removeColumn(k, at: t)
+        }
         let before = placements(at: t)
         let tile = columns[k].tiles.remove(at: r)
         if r < columns[k].active || columns[k].active == columns[k].tiles.count { columns[k].active -= 1 }
@@ -269,7 +312,7 @@ public struct Layout {
         let before = placements(at: t).filter { columns[k].windows.contains($0.key) }, row = above ? r : r + 1
         let active = columns[k].active
         join(tile, into: k, row: row)
-        if focus { focusedIndex = k } else { columns[k].active = active < row ? active : active + 1 }
+        if focus { (focusedIndex, floatingFocused) = (k, false) } else { columns[k].active = active < row ? active : active + 1 }
         showsDesktop = false  // janela aparece
         retarget(at: t)
         columns[k].tiles[row].height.snap()  // ela aparece já no lugar; as outras saem de onde estão
@@ -294,7 +337,7 @@ public struct Layout {
     /// nela. Sozinha na ponta, ou se as alturas mínimas dos apps não cabem juntas, nada muda.
     @discardableResult
     public mutating func consumeOrExpel(_ delta: Int, at t: Double) -> Bool {
-        guard let f = focusedIndex, abs(delta) == 1 else { return false }
+        guard let f = stripFocus, abs(delta) == 1 else { return false }
         let before = placements(at: t), mates = columns[f].windows
         if columns[f].tiles.count == 1 {
             guard columns.indices.contains(f + delta), fits(columns[f + delta].tiles + columns[f].tiles) else { return false }
@@ -353,9 +396,17 @@ public struct Layout {
         }
     }
 
-    /// Com a mesa à mostra, focar uma janela (Cmd+Tab, Dock) traz a fita de volta, mesmo sendo a focada.
+    /// Com a mesa à mostra, focar uma janela (Cmd+Tab, Dock) traz a fita de volta, mesmo sendo a focada. Solta: vai pra
+    /// cima das outras soltas, e a fita não rola.
     public mutating func focus(_ window: WindowID, at t: Double) {
-        guard let (k, r) = place(of: window), k != focusedIndex || r != columns[k].active || showsDesktop else { return }
+        if let i = floating.firstIndex(where: { $0.window == window }) {
+            floating.append(floating.remove(at: i))
+            floatingFocused = true
+            showsDesktop = false
+            return retarget(at: t)
+        }
+        guard let (k, r) = place(of: window), k != focusedIndex || r != columns[k].active || showsDesktop || floatingFocused else { return }
+        floatingFocused = false
         focusedIndex = k
         columns[k].active = r
         showsDesktop = false
@@ -364,14 +415,19 @@ public struct Layout {
 
     /// Option ↑ ↓: foco na janela de cima (-1) ou de baixo (1) da coluna. Devolve a janela, ou nil se já está na ponta.
     public mutating func focusInColumn(_ delta: Int) -> WindowID? {
-        guard let f = focusedIndex, columns[f].tiles.indices.contains(columns[f].active + delta) else { return nil }
+        guard let f = stripFocus, columns[f].tiles.indices.contains(columns[f].active + delta) else { return nil }
         columns[f].active += delta
         return columns[f].tiles[columns[f].active].window
     }
 
-    /// Move o foco `delta` colunas. Devolve a janela que deve receber foco, ou nil se já está na ponta.
+    /// Move o foco `delta` colunas. Devolve a janela que deve receber foco, ou nil se já está na ponta. Com o foco numa
+    /// solta, volta pra coluna focada da fita, sem rolar.
     public mutating func focusNeighbor(_ delta: Int, at t: Double) -> WindowID? {
         guard let f = focusedIndex else { return nil }
+        if floatingFocused {
+            floatingFocused = false
+            return focusedWindow
+        }
         let n = max(0, min(columns.count - 1, f + delta))
         guard n != f else { return nil }
         focusedIndex = n
@@ -383,7 +439,7 @@ public struct Layout {
     /// do niri. As duas saem de onde estão na tela e deslizam pro lugar novo; o foco fica nela. Na ponta, nada muda.
     @discardableResult
     public mutating func moveFocusedColumn(_ delta: Int, at t: Double) -> Bool {
-        guard let f = focusedIndex, abs(delta) == 1, columns.indices.contains(f + delta) else { return false }
+        guard let f = stripFocus, abs(delta) == 1, columns.indices.contains(f + delta) else { return false }
         let n = f + delta, d = Double(delta)
         // O espaço que cada uma ocupa agora (a largura como em `positions`): é o quanto a outra anda.
         let moved = columns[f].width.value(at: t).rounded() + config.gap
@@ -397,7 +453,7 @@ public struct Layout {
     }
 
     public mutating func resizeFocused(by delta: Double, at t: Double) {
-        guard let f = focusedIndex else { return }
+        guard let f = stripFocus else { return }
         var p = clamp(columns[f].proportion + delta)
         // Não encolhe além do que o app aceita: no limite, Option- não faz nada.
         if delta < 0, columns[f].minWidth > 0 {
@@ -412,7 +468,7 @@ public struct Layout {
     /// Pula pra próxima largura da lista, como o `switch-preset-column-width` do niri: passos maiores e
     /// fixos (1/3, 1/2, 2/3, 1) em vez de ±10%. `direction` +1 cresce, -1 encolhe. Na ponta, nada muda.
     public mutating func resizeFocused(toPresetIn presets: [Double], direction: Int, at t: Double) {
-        guard let f = focusedIndex else { return }
+        guard let f = stripFocus else { return }
         let p = columns[f].proportion, eps = 0.01
         let target = direction > 0 ? presets.sorted().first { $0 > p + eps } : presets.sorted().last { $0 < p - eps }
         guard let target else { return }
@@ -424,7 +480,7 @@ public struct Layout {
     /// aprendida). false se nada mudou (sozinha na coluna, ou na ponta da lista).
     @discardableResult
     public mutating func resizeFocusedHeight(toPresetIn presets: [Double], direction: Int, at t: Double) -> Bool {
-        guard let f = focusedIndex, columns[f].tiles.count > 1 else { return false }
+        guard let f = stripFocus, columns[f].tiles.count > 1 else { return false }
         let c = columns[f], i = c.active, h = heights(c), avail = h.reduce(0, +), p = h[i] / avail, eps = 0.01
         let rest = c.tiles.indices.filter { $0 != i }
         guard var q = direction > 0 ? presets.sorted().first(where: { $0 > p + eps }) : presets.sorted().last(where: { $0 < p - eps })
@@ -463,7 +519,7 @@ public struct Layout {
 
     /// Option+F: coluna ocupa a área toda; segundo toque volta pra largura anterior.
     public mutating func toggleFullWidthFocused(at t: Double) {
-        guard let f = focusedIndex else { return }
+        guard let f = stripFocus else { return }
         if let saved = columns[f].savedProportion {
             columns[f].proportion = saved
             columns[f].savedProportion = nil
@@ -472,6 +528,68 @@ public struct Layout {
             columns[f].proportion = 1
         }
         retarget(at: t)
+    }
+
+    // MARK: - Soltas
+
+    /// Janela solta entra no workspace (diálogo, regra `floating`, estado salvo, voltando de minimizada), sem animar, onde
+    /// está. Saindo da tela, ela entra pra área útil (do tamanho dela, no máximo).
+    public mutating func addFloating(_ window: WindowID, frame: CGRect, focus: Bool) {
+        guard !contains(window) else { return }
+        let w = min(frame.width, area.width), h = min(frame.height, area.height)
+        let r = bounds.contains(frame) ? frame : CGRect(x: min(max(frame.minX, area.minX), area.maxX - w),
+                                                      y: min(max(frame.minY, area.minY), area.maxY - h), width: w, height: h)
+        floating.append(Floating(window: window, frame: r.integral, dx: spring(0), dy: spring(0), dw: spring(0), dh: spring(0)))
+        if focus || columns.isEmpty { floatingFocused = true }  // sem coluna, a solta é a focada do workspace
+        if focus { showsDesktop = false }
+    }
+
+    /// Option Shift F na fita: a janela sai da coluna (as vizinhas fecham o buraco) e fica solta por cima da fita, onde
+    /// estava solta da última vez ou, na 1ª vez, no meio do lugar dela, com no máximo 2/3 da área em cada direção (do
+    /// tamanho da coluna ela cobriria a fita). Anda de onde estava, e o foco vai com ela.
+    @discardableResult
+    public mutating func float(_ window: WindowID, at t: Double) -> Bool {
+        guard let (k, r) = place(of: window), let from = placements(at: t)[window] else { return false }
+        let saved = columns[k].tiles[r].floatingFrame
+        remove(window, at: t)
+        let w = min(from.width, (area.width * 2 / 3).rounded()), h = min(from.height, (area.height * 2 / 3).rounded())
+        addFloating(window, frame: saved ?? CGRect(x: (from.midX - w / 2).rounded(), y: (from.midY - h / 2).rounded(), width: w, height: h),
+                    focus: true)
+        let f = floating[floating.count - 1].frame
+        floating[floating.count - 1].dx.displace(by: from.minX - f.minX, at: t)
+        floating[floating.count - 1].dy.displace(by: from.minY - f.minY, at: t)
+        floating[floating.count - 1].dw.displace(by: from.width - f.width, at: t)
+        floating[floating.count - 1].dh.displace(by: from.height - f.height, at: t)
+        retarget(at: t)
+        return true
+    }
+
+    /// Option Shift F na solta: volta pra fita numa coluna nova à direita da focada, como no niri, com a largura
+    /// `proportion`, e anda de onde estava. O foco vai com ela. O lugar de solta fica guardado pra próxima vez.
+    @discardableResult
+    public mutating func embed(_ window: WindowID, proportion: Double, at t: Double) -> Bool {
+        guard let i = floating.firstIndex(where: { $0.window == window }) else { return false }
+        let f = floating.remove(at: i), from = f.rect(at: t)
+        var c = Column(tiles: [tile(window)], proportion: clamp(proportion), savedProportion: nil, width: spring(0), offset: spring(0))
+        c.tiles[0].floatingFrame = f.frame
+        insert(c, focus: true, at: t)
+        restore([window: from], at: t)
+        return true
+    }
+
+    /// A pessoa arrastou ou redimensionou a solta (ou o app mudou ela): o lugar novo vale, sem animar.
+    public mutating func setFloatingFrame(_ window: WindowID, _ frame: CGRect) {
+        guard let i = floating.firstIndex(where: { $0.window == window }) else { return }
+        floating[i].frame = frame
+        floating[i].update { $0.snap() }
+    }
+
+    /// Option Tab: o foco vai da fita pra solta de cima, ou da solta de volta pra coluna focada da fita. Devolve a janela,
+    /// ou nil se não tem pra onde ir.
+    public mutating func toggleFloatingFocus() -> WindowID? {
+        guard floatingFocused ? focusedIndex != nil : !floating.isEmpty else { return nil }
+        floatingFocused.toggle()
+        return focusedWindow
     }
 
     /// Mostra a mesa ou traz a fita de volta. Sai pela esquerda quem tem o meio à esquerda do meio da tela.
@@ -515,6 +633,7 @@ public struct Layout {
                     columns[i].tiles[r].dw = respring(columns[i].tiles[r].dw)
                 }
             }
+            for i in floating.indices { floating[i].update { $0 = respring($0) } }
         }
         for i in columns.indices {
             columns[i].offset.displace(by: Double(i) * (config.gap - c.gap), at: t)
@@ -659,6 +778,21 @@ public struct Layout {
                 out.append(WindowFrame(window: tile.window, rect: CGRect(x: sx.rounded(), y: y, width: w, height: r.maxY.rounded() - y)))
             }
         }
+        // As soltas não rolam com a fita. Com a mesa, cada uma sai inteira pela borda mais perto do meio dela; na troca de
+        // workspace, andam junto e estacionam como as colunas.
+        for f in floating {
+            let r = f.rect(at: t), w = r.width.rounded()
+            let lo = bounds.minX - w + config.sliver, hi = bounds.maxX - config.sliver
+            let gone = r.midX < bounds.midX ? -p * max(0, r.maxX - bounds.minX - config.sliver) : p * max(0, bounds.maxX - config.sliver - r.minX)
+            var sx = min(max(r.minX + gone, lo), hi)
+            if away {
+                sx = shift.target < 0 ? lo : hi
+            } else if s != 0 && sx > lo && sx < hi {
+                sx = min(max(sx + s, lo), hi)
+            }
+            let y = r.minY.rounded()
+            out.append(WindowFrame(window: f.window, rect: CGRect(x: sx.rounded(), y: y, width: w, height: r.maxY.rounded() - y)))
+        }
         return out
     }
 
@@ -678,12 +812,14 @@ public struct Layout {
         view.isNear(at: t, within: d) && desktop.isNear(at: t, within: d) && shift.isNear(at: t, within: d)
             && columns.allSatisfy { $0.width.isNear(at: t, within: d) && $0.offset.isNear(at: t, within: d)
                 && $0.tiles.allSatisfy { $0.isNear(at: t, within: d) } }
+            && floating.allSatisfy { $0.springs.allSatisfy { $0.isNear(at: t, within: d) } }
     }
 
     public func isSettled(at t: Double) -> Bool {
         view.isSettled(at: t) && desktop.isSettled(at: t) && shift.isSettled(at: t)
             && columns.allSatisfy { $0.width.isSettled(at: t) && $0.offset.isSettled(at: t)
                 && $0.tiles.allSatisfy { $0.isSettled(at: t) } }
+            && floating.allSatisfy { $0.springs.allSatisfy { $0.isSettled(at: t) } }
     }
 
     public mutating func snapToTargets() {
@@ -695,5 +831,6 @@ public struct Layout {
             columns[i].offset.snap()
             for r in columns[i].tiles.indices { columns[i].tiles[r].snap() }
         }
+        for i in floating.indices { floating[i].update { $0.snap() } }
     }
 }

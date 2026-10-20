@@ -28,7 +28,7 @@ public struct Workspaces {
 
     public var count: Int { strips.count }
     public var windows: [WindowID] { strips.flatMap(\.windows) }
-    public func index(of window: WindowID) -> Int? { strips.firstIndex { $0.index(of: window) != nil } }
+    public func index(of window: WindowID) -> Int? { strips.firstIndex { $0.contains(window) } }
     public func index(named name: String) -> Int? { names.firstIndex(of: name) }
 
     /// Vai pro workspace `k`: a fita atual sai pelo lado oposto ao de `k`, e a de `k` entra. Trocar no meio
@@ -58,10 +58,15 @@ public struct Workspaces {
 
     /// Manda a janela pro workspace `k`: entra lá à direita da focada e vira a focada de lá. Aqui ela sai na
     /// hora e as vizinhas fecham o buraco, como ao fechar uma janela. Deslizando até a borda, ela passava por
-    /// cima da vizinha (5 a 6 frames com sobreposição nos painéis de teste).
+    /// cima da vizinha (5 a 6 frames com sobreposição nos painéis de teste). Solta continua solta, no mesmo lugar.
     public mutating func move(_ window: WindowID, to k: Int, at t: Double) {
-        guard let a = index(of: window), a != k, strips.indices.contains(k),
-              let c = strips[a].remove(window, at: t) else { return }
+        guard let a = index(of: window), a != k, strips.indices.contains(k) else { return }
+        if let f = strips[a].floating.first(where: { $0.window == window }) {
+            strips[a].remove(window, at: t)
+            strips[k].addFloating(window, frame: f.frame, focus: true)
+            return
+        }
+        guard let c = strips[a].remove(window, at: t) else { return }
         strips[k].insert(c, focus: true, at: t)
     }
 
@@ -83,7 +88,8 @@ public struct Workspaces {
         let source = list.indices.map { i in
             names.firstIndex(of: list[i]) ?? (names.indices.contains(i) && !list.contains(names[i]) ? i : nil)
         }
-        let orphans = names.indices.filter { !source.contains($0) }.flatMap { strips[$0].columns }
+        let gone = names.indices.filter { !source.contains($0) }
+        let orphans = gone.flatMap { strips[$0].columns }, loose = gone.flatMap { strips[$0].floating }
         let renamed = Dictionary(uniqueKeysWithValues: zip(source, list).compactMap { k, n in k.map { (names[$0], n) } }
             .filter { $0 != $1 })
         let template = strips[0]
@@ -94,6 +100,7 @@ public struct Workspaces {
         for i in strips.indices where i != now && strips[i].shift.target == 0 { strips[i].park((i < now ? -1 : 1) * template.bounds.width) }
         strips[now].slide(to: 0, at: t)
         for c in orphans { strips[now].insert(c, focus: false, at: t) }
+        for f in loose { strips[now].addFloating(f.window, frame: f.frame, focus: false) }
         return renamed
     }
 
