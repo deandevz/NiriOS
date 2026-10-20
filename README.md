@@ -28,7 +28,7 @@ Windows live in columns on an endless horizontal strip. Opening a window never s
 - **Ghost resize.** While a column changes size, a frosted glass with the app's icon takes its place. The real window comes back once it has finished redrawing, so you never see a stretched or half-drawn frame, Electron apps included.
 - **Workspaces that slide.** One strip per workspace, side by side. Apps can be pinned to a workspace, and a SketchyBar setup made for AeroSpace works with one line of config.
 - **Show desktop.** Windows slide out through the nearest edge and come back with the same key.
-- **Floating windows.** `⌥ ⇧ F` pulls a window out of the strip so it floats above it, or puts it back. A floating window belongs to its workspace and leaves with it. When focus goes back to the strip, it slides into a drawer at the screen edge. `⌥ ⇥` works like `⌘ ⇥` for floating windows: hold `⌥`, press `⇥` to pick an app, release to bring just that one out. `⌥ ⇧ P` pins one so it stays on screen. Windows the strip skips (Premiere, Steam, dialogs) float in their workspace, can be tiled with one line of config, and any app can be set to always open floating.
+- **Floating windows.** `⌥ ⇧ F` pulls a window out of the strip so it floats above it, or puts it back. A floating window belongs to its workspace and leaves with it. When focus goes back to the strip, it slides into a drawer at the screen edge. `⌥ ⇥` works like `⌘ ⇥` for the windows of the workspace, tiled or floating: hold `⌥`, press `⇥` to pick one, release to bring it to the front (a floating one comes out of the drawer on its own). `⌥ ⇧ P` pins one so it stays on screen. Windows the strip skips (Premiere, Steam, dialogs) float in their workspace, can be tiled with one line of config, and any app can be set to always open floating.
 
 <p align="center">
   <img src="docs/media/columns.gif" width="840" alt="Moving a column, stacking two windows in one column and showing the desktop">
@@ -166,7 +166,7 @@ The terminal you run it from needs Accessibility permission. `Ctrl+C` brings eve
 | `⌥ ⇧ 1` to `⌥ ⇧ 4` | Send the focused window to a workspace |
 | `⌥ D` | Show the desktop; press again to bring the windows back |
 | `⌥ ⇧ F` | Float the focused window above the strip, or put it back in the strip. A window outside the strip (a dialog, Steam) joins it |
-| `⌥ ⇥` | Like `⌘ ⇥` for the floating windows of the workspace: hold `⌥`, press `⇥` (or `⇧ ⇥`) to pick, release to bring it to the front. A quick press switches between the strip and the last floating window |
+| `⌥ ⇥` | Like `⌘ ⇥` for the windows of the workspace, tiled or floating: hold `⌥`, press `⇥` (or `⇧ ⇥`) to pick, release to bring it to the front. A quick press goes back to the previous window |
 | `⌥ ⇧ P` | Pin the focused floating window so it stays on screen, out of the drawer; press again to unpin |
 | `⌥ V` | Clipboard history |
 | `⌥ S` | Screenshot of an area, with drawing tools |
@@ -216,7 +216,7 @@ Click the menu bar icon to open the settings panel, or edit `~/.config/niri-os/c
 | `shortcuts` | | A list per action; `[]` disables it |
 | `features` | all on | `tiling`, `border`, `clipboard`, `screenshot`, `wallpaper`; `false` turns one off |
 
-Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `toggleFloating`, `focusFloating`, `pinFloating`, `clipboard` and `screenshot`. Apps in `tiling`, `floating` and `workspaces` match by name or bundle id, and a trailing `*` matches the start of the name. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
+Shortcuts are modifiers (`ctrl`, `option`, `shift`, `cmd`) plus a key, like `"option+shift+left"`. Actions: `grow`, `shrink`, `growHeight`, `shrinkHeight`, `focusLeft`, `focusRight`, `focusUp`, `focusDown`, `moveColumnLeft`, `moveColumnRight`, `consumeOrExpelLeft`, `consumeOrExpelRight`, `toggleFullWidth`, `toggleDesktop`, `toggleFloating`, `switchWindows`, `pinFloating`, `clipboard` and `screenshot`. Apps in `tiling`, `floating` and `workspaces` match by name or bundle id, and a trailing `*` matches the start of the name. For clickable workspaces in a bar, `/Applications/NiriOS.app/Contents/MacOS/niri-os --workspace <name>` switches from the command line.
 
 ## Limitations
 

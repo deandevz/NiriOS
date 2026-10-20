@@ -700,7 +700,7 @@ final class WindowManager: NSObject {
         switch action {
         case .focusLeft, .focusRight:
             // Só rola; o app onde a fita parar é ativado no fim (ver `deferFocus`). Saindo de uma solta, a fita não rola:
-            // o foco vai na hora (ver `.focusFloating`).
+            // o foco vai na hora (ver `finishSwitch`).
             let fromFloating = layout.floatingFocused
             guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now) else {
                 if verbose { log("ação \(action): já está na ponta da fita") }
@@ -742,8 +742,8 @@ final class WindowManager: NSObject {
             withGlass(at: now) { resize(&layout, action, at: now) }
         case .toggleFloating:
             toggleFloating(at: now)
-        case .focusFloating:
-            switchFloating(back: CGEventSource.flagsState(.hidSystemState).contains(.maskShift))
+        case .switchWindows:
+            switchWindows(back: CGEventSource.flagsState(.hidSystemState).contains(.maskShift))
         case .pinFloating:
             guard layout.floatingFocused, let id = layout.focusedWindow, let pinned = layout.togglePinned(id) else { return }
             if verbose { log("ação \(action): janela \(id) \(pinned ? "fixada na tela" : "volta pra gaveta")") }
@@ -757,19 +757,23 @@ final class WindowManager: NSObject {
         animate()
     }
 
-    /// Option Tab aberto: o que dá pra escolher (ver `switchFloating`) e o escolhido.
+    /// Option Tab aberto: o que dá pra escolher (ver `switchWindows`) e o escolhido.
     private var switching: (items: [CGWindowID], index: Int)?
     private lazy var switcher = Switcher()
+    /// As janelas focadas, da mais recente pra mais antiga: a ordem do Option Tab. Atualizada a cada `animate`; janela que
+    /// sai do `tracked` sai daqui.
+    private var recent: [CGWindowID] = []
 
-    /// Option Tab, como o Cmd+Tab: com o Option seguro, cada Tab passa pro próximo (com Shift, pro anterior), e soltar o
-    /// Option traz o escolhido: a solta sai da gaveta (só ela, as outras ficam) e sobe, ou o foco volta pra fita. A lista
-    /// começa no que tem o foco; a fita (a janela focada dela) vem logo depois de uma solta, e as soltas vão da mais
-    /// recente pra mais antiga. Toque rápido alterna entre a fita e a última solta, e o seletor só aparece com o Option
-    /// seguro por 0,12 s, como no Cmd+Tab (senão piscava).
-    private func switchFloating(back: Bool) {
+    /// Option Tab, como o Cmd+Tab, com as janelas do workspace (da fita e soltas): com o Option seguro, cada Tab passa pra
+    /// próxima (com Shift, pra anterior), e soltar o Option traz a escolhida. Solta sai da gaveta (só ela) e sobe; da
+    /// fita, a fita rola até ela. A lista vai da focada pras usadas antes, e depois as que nunca tiveram foco, na ordem da
+    /// fita: o toque rápido volta pra janela de antes. O seletor só aparece com o Option seguro por 0,12 s, como no
+    /// Cmd+Tab (senão piscava).
+    private func switchWindows(back: Bool) {
         if switching == nil {
-            let loose = layout.floating.reversed().map(\.window), strip = [layout.stripWindow].compactMap { $0 }
-            let items = layout.floatingFocused ? Array(loose.prefix(1)) + strip + loose.dropFirst() : strip + loose
+            var seen = Set<CGWindowID>()
+            let here = layout.windows
+            let items = ([layout.focusedWindow].compactMap { $0 } + recent.filter(here.contains) + here).filter { seen.insert($0).inserted }
             guard items.count > 1 else { return }
             switching = (items, 0)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.showSwitcher() }
@@ -789,17 +793,18 @@ final class WindowManager: NSObject {
         }, selected: s.index)
     }
 
-    /// O Option subiu: a escolhida ganha o foco na hora (a fita não rola, só a solta anda; esperando o fim, ela entrava
-    /// da gaveta por baixo da janela da fita e pulava pra frente no fim, visto no uso em 2026-10-20).
+    /// O Option subiu: a escolhida ganha o foco. Na hora se a fita não rola (só a solta anda; esperando o fim, ela entrava
+    /// da gaveta por baixo da janela da fita e pulava pra frente no fim, visto no uso em 2026-10-20); rolando, no fim,
+    /// como o `< >`.
     private func finishSwitch() {
         guard let s = switching else { return }
         switching = nil
         switcher.hide()
-        let id = s.items[s.index]
+        let id = s.items[s.index], now = CACurrentMediaTime()
         guard layout.contains(id) else { return }  // fechou ou mudou de workspace no meio
-        layout.focus(id, at: CACurrentMediaTime())
-        if verbose { log("ação focusFloating: foco em \(layout.floatingFocused ? "solta" : "fita") (janela \(id))") }
-        requestFocus(id)
+        layout.focus(id, at: now)
+        if verbose { log("ação switchWindows: foco em \(layout.floatingFocused ? "solta" : "fita") (janela \(id))") }
+        if workspaces.isNear(at: now, within: Self.focusDistance) { requestFocus(id) } else { deferFocus(id) }
         animate()
     }
 
@@ -1332,11 +1337,12 @@ final class WindowManager: NSObject {
         scheduleSave()
         // O vídeo do papel de parede toca só com a mesa à mostra; com janela na tela ele para.
         if started { wallpaper?.desktopShown(layout.showsDesktop || layout.windows.isEmpty) }
-        // Option ↑ ↓ só é nosso numa coluna com mais de uma janela, e o Option Tab só com janela solta no workspace; fora
+        // Option ↑ ↓ só é nosso numa coluna com mais de uma janela, e o Option Tab só com duas janelas no workspace; fora
         // disso a tecla vai pro app.
         let stacked = !layout.floatingFocused && layout.focusedIndex.map { layout.columns[$0].tiles.count > 1 } ?? false
         var idle: Set<Action> = stacked ? [] : [.focusUp, .focusDown]
-        if layout.floating.isEmpty { idle.insert(.focusFloating) }
+        if layout.windows.count < 2 { idle.insert(.switchWindows) }
+        if let f = layout.focusedWindow, recent.first != f { recent = [f] + recent.filter { $0 != f && tracked[$0] != nil } }
         if !layout.floatingFocused { idle.insert(.pinFloating) }
         if hotkeys.idle != idle { hotkeys.idle = idle }
         // A gaveta das soltas segue o foco (ver `Layout.updateDrawer`).

@@ -102,7 +102,7 @@ struct Config {
         .moveColumnLeft: ["option+shift+,", "option+shift+left"], .moveColumnRight: ["option+shift+.", "option+shift+right"],
         .consumeOrExpelLeft: ["option+cmd+,"], .consumeOrExpelRight: ["option+cmd+."],
         .toggleFullWidth: ["option+f"], .toggleDesktop: ["option+d"], .clipboard: ["option+v"], .screenshot: ["option+s"],
-        .toggleFloating: ["option+shift+f"], .focusFloating: ["option+tab"], .pinFloating: ["option+shift+p"],
+        .toggleFloating: ["option+shift+f"], .switchWindows: ["option+tab"], .pinFloating: ["option+shift+p"],
     ].mapValues { $0.map { Shortcut($0)! } }
 
     /// O padrão de uma ação. Workspace: Option+<nome> pra ir e Option+Shift+<nome> pra mandar a janela, se o

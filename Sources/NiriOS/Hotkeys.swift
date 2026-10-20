@@ -8,8 +8,8 @@ enum Action: Hashable {
     case consumeOrExpelLeft, consumeOrExpelRight, toggleFullWidth, toggleDesktop
     /// Solta a janela com o teclado da fita (fica por cima dela, no workspace) ou prende na fita (ver `Layout.float`).
     case toggleFloating
-    /// Como o Cmd+Tab, entre a fita e as soltas do workspace (ver `WindowManager.switchFloating`).
-    case focusFloating
+    /// Como o Cmd+Tab, entre as janelas do workspace (ver `WindowManager.switchWindows`).
+    case switchWindows
     /// Fixa a solta focada na tela, fora da gaveta, ou devolve (ver `Layout.togglePinned`).
     case pinFloating
     /// Abre e fecha o histórico do que foi copiado (ver `Clipboard`).
@@ -22,7 +22,7 @@ enum Action: Hashable {
     /// As ações de "shortcuts", na ordem do painel.
     static let allCases: [Action] = [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown,
                                      .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop,
-                                     .toggleFloating, .focusFloating, .pinFloating, .clipboard, .screenshot]
+                                     .toggleFloating, .switchWindows, .pinFloating, .clipboard, .screenshot]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
