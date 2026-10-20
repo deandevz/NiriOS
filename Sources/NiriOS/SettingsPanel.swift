@@ -498,7 +498,7 @@ extension Action {
         case .toggleFullWidth: "Largura total"
         case .toggleDesktop: "Mostrar a mesa"
         case .toggleFloating: "Soltar da fita / prender na fita"
-        case .focusFloating: "Foco entre a fita e as soltas"
+        case .focusFloating: "Trocar entre a fita e as soltas (como o ⌘⇥)"
         case .pinFloating: "Solta sempre na tela (fora da gaveta)"
         case .clipboard: "Histórico do que foi copiado"
         case .screenshot: "Print de uma área da tela"
@@ -748,7 +748,7 @@ private struct WindowsTab: View {
                 ShortcutRow(panel: panel, action: .focusFloating)
                 ShortcutRow(panel: panel, action: .pinFloating)
             } footer: {
-                Text("Com o foco na fita, a solta vai pra gaveta: sai da tela e deixa 1 pt na borda. O foco nela traz de volta. A fixada e as do app da janela focada ficam na tela.")
+                Text("Com o foco na fita, a solta vai pra gaveta: sai da tela e deixa 1 pt na borda. Com o ⌥ seguro, cada ⇥ escolhe um app, e soltar traz ele. A fixada e as do app da janela focada ficam na tela.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             RulesSection(panel: panel, tiling: true)

@@ -54,7 +54,8 @@ private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX =
     _ = settle(&l)
     let dragged = CGRect(x: 300, y: 200, width: 500, height: 400)
     l.setFloatingFrame(2, dragged)
-    #expect(l.toggleFloatingFocus() == 1)
+    #expect(l.stripWindow == 1)
+    l.focus(1, at: 0)
     let embedded = l.embed(2, proportion: 0.5, at: 0)
     #expect(embedded)
     #expect(l.columns.map(\.windows) == [[1], [2], [3]])
@@ -66,18 +67,19 @@ private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX =
     #expect(rect(settle(&l), 2) == dragged)
 }
 
-/// Option Tab vai pra solta de cima e volta pra coluna focada; as setas, com o foco na solta, também voltam pra fita.
-@Test func focusMovesBetweenTheStripAndTheTopFloating() {
+/// Focar uma solta põe ela por cima das outras e guarda a focada da fita; as setas, com o foco na solta, voltam pra fita
+/// sem rolar.
+@Test func focusMovesBetweenTheStripAndTheFloating() {
     var l = makeLayout(2)
     l.addFloating(10, frame: CGRect(x: 100, y: 100, width: 400, height: 300), focus: false)
     l.addFloating(11, frame: CGRect(x: 600, y: 100, width: 400, height: 300), focus: false)
     #expect(l.focusedWindow == 1)
-    #expect(l.toggleFloatingFocus() == 11)
     l.focus(10, at: 0)
-    #expect(l.focusedWindow == 10 && l.floating.last?.window == 10)
-    #expect(l.focusNeighbor(1, at: 0) == 1)  // da solta, volta pra focada da fita sem rolar
-    #expect(l.toggleFloatingFocus() == 10)
-    #expect(l.toggleFloatingFocus() == 1)
+    #expect(l.focusedWindow == 10 && l.floating.last?.window == 10 && l.stripWindow == 1)
+    #expect(l.focusNeighbor(1, at: 0) == 1)
+    l.focus(11, at: 0)
+    l.focus(1, at: 0)
+    #expect(!l.floatingFocused && l.focusedWindow == 1)
 }
 
 /// Com o foco numa solta, os atalhos de coluna não mexem na fita.
@@ -160,7 +162,7 @@ private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX =
 }
 
 /// A gaveta: com o foco na fita, a solta de outro app sai pela borda mais perto do meio dela e estaciona com 1 pt; a do
-/// mesmo app da focada e a fixada ficam. O Option Tab abre a gaveta (todas na tela) e voltar pra fita fecha.
+/// mesmo app da focada e a fixada ficam. Focar uma solta traz só ela.
 @Test func drawerKeepsOnlyPinnedAndSameAppFloatingWhileTheStripIsFocused() {
     var l = makeLayout(2)
     let app: [WindowID: String] = [1: "a", 2: "b", 10: "c", 11: "a"]
@@ -171,13 +173,14 @@ private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX =
     update()
     var f = settle(&l)
     #expect(rect(f, 10).maxX == bounds.minX + 1 && rect(f, 11) == right)  // a 1 (app a) focada: a 11 fica
-    _ = l.toggleFloatingFocus()
+    l.focus(10, at: 0)
     update()
     f = settle(&l)
-    #expect(l.drawerOpen && rect(f, 10) == left && rect(f, 11) == right)
-    _ = l.toggleFloatingFocus()
+    #expect(rect(f, 10) == left && rect(f, 11).minX == bounds.maxX - 1)
+    l.focus(1, at: 0)
     update()
-    #expect(!l.drawerOpen && rect(settle(&l), 10).maxX == bounds.minX + 1)
+    f = settle(&l)
+    #expect(rect(f, 10).maxX == bounds.minX + 1 && rect(f, 11) == right)
     #expect(l.togglePinned(10) == true)
     update()
     #expect(rect(settle(&l), 10) == left)

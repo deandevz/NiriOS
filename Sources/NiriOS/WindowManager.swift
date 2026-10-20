@@ -743,11 +743,7 @@ final class WindowManager: NSObject {
         case .toggleFloating:
             toggleFloating(at: now)
         case .focusFloating:
-            // Na hora, e não no fim da animação: a fita não rola, só a solta anda, e ela tem que subir antes de entrar
-            // (esperando, ela entrava por baixo da janela da fita e pulava pra frente no fim; visto no uso em 2026-10-20).
-            guard let id = layout.toggleFloatingFocus() else { return }
-            if verbose { log("ação \(action): foco em \(layout.floatingFocused ? "solta" : "fita") (janela \(id))") }
-            requestFocus(id)
+            switchFloating(back: CGEventSource.flagsState(.hidSystemState).contains(.maskShift))
         case .pinFloating:
             guard layout.floatingFocused, let id = layout.focusedWindow, let pinned = layout.togglePinned(id) else { return }
             if verbose { log("ação \(action): janela \(id) \(pinned ? "fixada na tela" : "volta pra gaveta")") }
@@ -758,6 +754,52 @@ final class WindowManager: NSObject {
             if let f = layout.focusedWindow { deferFocus(f) }
         case .toggleDesktop, .workspace, .clipboard, .screenshot: break
         }
+        animate()
+    }
+
+    /// Option Tab aberto: o que dá pra escolher (ver `switchFloating`) e o escolhido.
+    private var switching: (items: [CGWindowID], index: Int)?
+    private lazy var switcher = Switcher()
+
+    /// Option Tab, como o Cmd+Tab: com o Option seguro, cada Tab passa pro próximo (com Shift, pro anterior), e soltar o
+    /// Option traz o escolhido: a solta sai da gaveta (só ela, as outras ficam) e sobe, ou o foco volta pra fita. A lista
+    /// começa no que tem o foco; a fita (a janela focada dela) vem logo depois de uma solta, e as soltas vão da mais
+    /// recente pra mais antiga. Toque rápido alterna entre a fita e a última solta, e o seletor só aparece com o Option
+    /// seguro por 0,12 s, como no Cmd+Tab (senão piscava).
+    private func switchFloating(back: Bool) {
+        if switching == nil {
+            let loose = layout.floating.reversed().map(\.window), strip = [layout.stripWindow].compactMap { $0 }
+            let items = layout.floatingFocused ? Array(loose.prefix(1)) + strip + loose.dropFirst() : strip + loose
+            guard items.count > 1 else { return }
+            switching = (items, 0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.showSwitcher() }
+        }
+        guard var s = switching else { return }
+        s.index = (s.index + (back ? s.items.count - 1 : 1)) % s.items.count
+        switching = s
+        switcher.select(s.index)
+        if !shortcutHeld { finishSwitch() }  // o Option já subiu (toque rápido) ou é o --script
+    }
+
+    private func showSwitcher() {
+        guard let s = switching, !switcher.isShown else { return }
+        switcher.show(s.items.map { id in
+            let owner = tracked[id].flatMap { NSRunningApplication(processIdentifier: $0.pid) }.map(Self.owner(of:))
+            return Switcher.Item(icon: owner?.icon, name: owner?.localizedName ?? "?")
+        }, selected: s.index)
+    }
+
+    /// O Option subiu: a escolhida ganha o foco na hora (a fita não rola, só a solta anda; esperando o fim, ela entrava
+    /// da gaveta por baixo da janela da fita e pulava pra frente no fim, visto no uso em 2026-10-20).
+    private func finishSwitch() {
+        guard let s = switching else { return }
+        switching = nil
+        switcher.hide()
+        let id = s.items[s.index]
+        guard layout.contains(id) else { return }  // fechou ou mudou de workspace no meio
+        layout.focus(id, at: CACurrentMediaTime())
+        if verbose { log("ação focusFloating: foco em \(layout.floatingFocused ? "solta" : "fita") (janela \(id))") }
+        requestFocus(id)
         animate()
     }
 
@@ -888,6 +930,7 @@ final class WindowManager: NSObject {
 
     private func modifiersChanged(_ down: Bool) {
         modifiersHeld = down
+        if !down { finishSwitch() }
         if transition != nil { prefetchPhotos(down) }
         guard !down else { return }
         returnGhosts()  // ver `step`

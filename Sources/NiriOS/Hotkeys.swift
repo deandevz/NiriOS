@@ -8,7 +8,7 @@ enum Action: Hashable {
     case consumeOrExpelLeft, consumeOrExpelRight, toggleFullWidth, toggleDesktop
     /// Solta a janela com o teclado da fita (fica por cima dela, no workspace) ou prende na fita (ver `Layout.float`).
     case toggleFloating
-    /// O foco vai da fita pra solta de cima e volta (ver `Layout.toggleFloatingFocus`).
+    /// Como o Cmd+Tab, entre a fita e as soltas do workspace (ver `WindowManager.switchFloating`).
     case focusFloating
     /// Fixa a solta focada na tela, fora da gaveta, ou devolve (ver `Layout.togglePinned`).
     case pinFloating

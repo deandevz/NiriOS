@@ -137,12 +137,8 @@ public struct Layout {
     var shift: Spring
     /// As soltas, de trás pra frente: a última é a de cima (a focada por último).
     public private(set) var floating: [Floating] = []
-    /// O foco está na solta de cima, e não na coluna focada (que continua guardada pra volta). Voltar pra fita fecha a gaveta.
-    public private(set) var floatingFocused = false {
-        didSet { if !floatingFocused { drawerOpen = false } }
-    }
-    /// A gaveta aberta pelo Option Tab: todas as soltas na tela.
-    public private(set) var drawerOpen = false
+    /// O foco está na solta de cima, e não na coluna focada (que continua guardada pra volta).
+    public private(set) var floatingFocused = false
 
     public init(area: CGRect, bounds: CGRect, config: LayoutConfig) {
         self.area = area
@@ -156,6 +152,8 @@ public struct Layout {
     public var focusedWindow: WindowID? {
         floatingFocused ? floating.last?.window : stripFocus.map { columns[$0].tiles[columns[$0].active].window }
     }
+    /// A janela focada da fita, mesmo com o foco numa solta: pra onde o foco volta.
+    public var stripWindow: WindowID? { focusedIndex.map { columns[$0].tiles[columns[$0].active].window } }
     /// A coluna focada, se o foco está na fita (e não numa solta): só nela os atalhos de coluna fazem algo.
     private var stripFocus: Int? { floatingFocused ? nil : focusedIndex }
     /// As da fita e as soltas.
@@ -594,15 +592,6 @@ public struct Layout {
         floating[i].update { $0.snap() }
     }
 
-    /// Option Tab: o foco vai da fita pra solta de cima e abre a gaveta (todas as soltas na tela), ou volta pra coluna
-    /// focada da fita e fecha. Devolve a janela, ou nil se não tem pra onde ir.
-    public mutating func toggleFloatingFocus() -> WindowID? {
-        guard floatingFocused ? focusedIndex != nil : !floating.isEmpty else { return nil }
-        floatingFocused.toggle()
-        drawerOpen = floatingFocused
-        return focusedWindow
-    }
-
     /// Option Shift P: a solta fica sempre na tela, fora da gaveta, ou volta pra ela. Devolve se ficou fixada (nil se a
     /// janela não está solta).
     public mutating func togglePinned(_ window: WindowID) -> Bool? {
@@ -613,12 +602,12 @@ public struct Layout {
 
     /// A gaveta: a solta sai da tela pela borda mais perto do meio dela (como na mesa) e estaciona com 1 pt, pra não ficar
     /// no meio das janelas da fita, por trás da focada (o macOS não deixa pôr janela de outro app embaixo das outras; ver
-    /// docs/NOTES.md). Ficam na tela: a fixada, as da gaveta aberta pelo Option Tab e as do mesmo app da focada (`sameApp`:
-    /// o seletor de cores não some ao clicar no desenho).
+    /// docs/NOTES.md). Ficam na tela: a fixada e as do mesmo app da focada (`sameApp`: o seletor de cores não some ao
+    /// clicar no desenho).
     public mutating func updateDrawer(at t: Double, sameApp: (WindowID, WindowID) -> Bool) {
         let f = focusedWindow
         for i in floating.indices {
-            let shown = floating[i].pinned || drawerOpen || f.map { sameApp($0, floating[i].window) } ?? true
+            let shown = floating[i].pinned || f.map { sameApp($0, floating[i].window) } ?? true
             floating[i].out.retarget(shown ? 0 : 1000, at: t)
         }
     }

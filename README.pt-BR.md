@@ -28,7 +28,7 @@ As janelas ficam em colunas numa fita horizontal sem fim. Abrir uma janela nunca
 - **Resize fantasma.** Enquanto a coluna muda de largura, um vidro fosco com o ícone do app anda no lugar dela. A janela real volta quando terminou de redesenhar, então você nunca vê um quadro esticado ou pela metade, nem em app Electron.
 - **Workspaces que deslizam.** Uma fita por workspace, lado a lado. Dá para fixar apps num workspace, e uma SketchyBar feita para o AeroSpace funciona com uma linha de config.
 - **Mostrar a mesa.** As janelas saem pela borda mais próxima e voltam com a mesma tecla.
-- **Janelas soltas.** `⌥ ⇧ F` solta a janela da fita, por cima dela, ou prende de volta. A solta é do workspace e sai junto com ele. Quando o foco volta para a fita, ela entra numa gaveta na borda da tela, e `⌥ ⇥` traz de volta; `⌥ ⇧ P` fixa uma na tela. Janela que a fita pula (Premiere, Steam, diálogos) fica solta no workspace dela, entra na fita com uma linha de config, e qualquer app pode abrir sempre solto.
+- **Janelas soltas.** `⌥ ⇧ F` solta a janela da fita, por cima dela, ou prende de volta. A solta é do workspace e sai junto com ele. Quando o foco volta para a fita, ela entra numa gaveta na borda da tela. `⌥ ⇥` funciona como o `⌘ ⇥` para as soltas: segure o `⌥`, aperte `⇥` para escolher o app e solte para trazer só ele. `⌥ ⇧ P` fixa uma na tela. Janela que a fita pula (Premiere, Steam, diálogos) fica solta no workspace dela, entra na fita com uma linha de config, e qualquer app pode abrir sempre solto.
 
 <p align="center">
   <img src="docs/media/columns.gif" width="840" alt="Movendo uma coluna, empilhando duas janelas numa coluna e mostrando a mesa">
@@ -166,7 +166,7 @@ O terminal que roda o NiriOS precisa da permissão de Acessibilidade. `Ctrl+C` d
 | `⌥ ⇧ 1` a `⌥ ⇧ 4` | Manda a janela focada para um workspace |
 | `⌥ D` | Mostra a mesa; de novo as janelas voltam |
 | `⌥ ⇧ F` | Solta a janela focada por cima da fita, ou prende de volta. Janela de fora da fita (um diálogo, o Steam) entra nela |
-| `⌥ ⇥` | Foco entre a fita e as janelas soltas do workspace, trazendo a janela pra frente. Indo para as soltas abre a gaveta; voltando, fecha |
+| `⌥ ⇥` | Como o `⌘ ⇥`, para as soltas do workspace: segure o `⌥`, aperte `⇥` (ou `⇧ ⇥`) para escolher e solte para trazer para a frente. Toque rápido alterna entre a fita e a última solta |
 | `⌥ ⇧ P` | Fixa a solta focada na tela, fora da gaveta; de novo solta |
 | `⌥ V` | Histórico do clipboard |
 | `⌥ S` | Print de uma área, com ferramentas de desenho |
