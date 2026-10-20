@@ -63,7 +63,7 @@ public struct Workspaces {
         guard let a = index(of: window), a != k, strips.indices.contains(k) else { return }
         if let f = strips[a].floating.first(where: { $0.window == window }) {
             strips[a].remove(window, at: t)
-            strips[k].addFloating(window, frame: f.frame, focus: true)
+            strips[k].addFloating(window, frame: f.frame, focus: true, pinned: f.pinned)
             return
         }
         guard let c = strips[a].remove(window, at: t) else { return }
@@ -100,7 +100,7 @@ public struct Workspaces {
         for i in strips.indices where i != now && strips[i].shift.target == 0 { strips[i].park((i < now ? -1 : 1) * template.bounds.width) }
         strips[now].slide(to: 0, at: t)
         for c in orphans { strips[now].insert(c, focus: false, at: t) }
-        for f in loose { strips[now].addFloating(f.window, frame: f.frame, focus: false) }
+        for f in loose { strips[now].addFloating(f.window, frame: f.frame, focus: false, pinned: f.pinned) }
         return renamed
     }
 

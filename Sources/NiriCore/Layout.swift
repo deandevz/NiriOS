@@ -80,23 +80,28 @@ public struct Column {
 }
 
 /// Janela solta da fita, por cima dela, como a camada flutuante do niri: é do workspace (sai com ele na troca e com a
-/// mesa), mas não rola com a fita. A pessoa arrasta e redimensiona com o mouse.
+/// mesa), mas não rola com a fita. A pessoa arrasta e redimensiona com o mouse. Sem o foco, vai pra gaveta (ver
+/// `Layout.updateDrawer`).
 public struct Floating {
     public let window: WindowID
-    /// Onde fica na tela, sem a troca de workspace e a mesa.
+    /// Onde fica na tela, sem a troca de workspace, a mesa e a gaveta.
     public internal(set) var frame: CGRect
+    /// Fixada (Option Shift P): fica na tela mesmo com o foco na fita, fora da gaveta.
+    public internal(set) var pinned = false
     /// Deslocamento animado de onde estava (a coluna de onde saiu), como o `dx`/`dy`/`dw` das janelas da coluna.
     var dx: Spring, dy: Spring, dw: Spring, dh: Spring
+    /// Quanto já entrou na gaveta, em milésimos do caminho até a borda (0 = na tela), como a mesa.
+    var out: Spring
 
     func rect(at t: Double) -> CGRect {
         CGRect(x: frame.minX + dx.value(at: t), y: frame.minY + dy.value(at: t),
                width: frame.width + dw.value(at: t), height: frame.height + dh.value(at: t))
     }
 
-    var springs: [Spring] { [dx, dy, dw, dh] }
+    var springs: [Spring] { [dx, dy, dw, dh, out] }
 
     mutating func update(_ f: (inout Spring) -> Void) {
-        f(&dx); f(&dy); f(&dw); f(&dh)
+        f(&dx); f(&dy); f(&dw); f(&dh); f(&out)
     }
 }
 
@@ -132,8 +137,12 @@ public struct Layout {
     var shift: Spring
     /// As soltas, de trás pra frente: a última é a de cima (a focada por último).
     public private(set) var floating: [Floating] = []
-    /// O foco está na solta de cima, e não na coluna focada (que continua guardada pra volta).
-    public private(set) var floatingFocused = false
+    /// O foco está na solta de cima, e não na coluna focada (que continua guardada pra volta). Voltar pra fita fecha a gaveta.
+    public private(set) var floatingFocused = false {
+        didSet { if !floatingFocused { drawerOpen = false } }
+    }
+    /// A gaveta aberta pelo Option Tab: todas as soltas na tela.
+    public private(set) var drawerOpen = false
 
     public init(area: CGRect, bounds: CGRect, config: LayoutConfig) {
         self.area = area
@@ -534,12 +543,13 @@ public struct Layout {
 
     /// Janela solta entra no workspace (diálogo, regra `floating`, estado salvo, voltando de minimizada), sem animar, onde
     /// está. Saindo da tela, ela entra pra área útil (do tamanho dela, no máximo).
-    public mutating func addFloating(_ window: WindowID, frame: CGRect, focus: Bool) {
+    public mutating func addFloating(_ window: WindowID, frame: CGRect, focus: Bool, pinned: Bool = false) {
         guard !contains(window) else { return }
         let w = min(frame.width, area.width), h = min(frame.height, area.height)
         let r = bounds.contains(frame) ? frame : CGRect(x: min(max(frame.minX, area.minX), area.maxX - w),
                                                       y: min(max(frame.minY, area.minY), area.maxY - h), width: w, height: h)
-        floating.append(Floating(window: window, frame: r.integral, dx: spring(0), dy: spring(0), dw: spring(0), dh: spring(0)))
+        floating.append(Floating(window: window, frame: r.integral, pinned: pinned, dx: spring(0), dy: spring(0), dw: spring(0),
+                                 dh: spring(0), out: spring(0)))
         if focus || columns.isEmpty { floatingFocused = true }  // sem coluna, a solta é a focada do workspace
         if focus { showsDesktop = false }
     }
@@ -584,12 +594,33 @@ public struct Layout {
         floating[i].update { $0.snap() }
     }
 
-    /// Option Tab: o foco vai da fita pra solta de cima, ou da solta de volta pra coluna focada da fita. Devolve a janela,
-    /// ou nil se não tem pra onde ir.
+    /// Option Tab: o foco vai da fita pra solta de cima e abre a gaveta (todas as soltas na tela), ou volta pra coluna
+    /// focada da fita e fecha. Devolve a janela, ou nil se não tem pra onde ir.
     public mutating func toggleFloatingFocus() -> WindowID? {
         guard floatingFocused ? focusedIndex != nil : !floating.isEmpty else { return nil }
         floatingFocused.toggle()
+        drawerOpen = floatingFocused
         return focusedWindow
+    }
+
+    /// Option Shift P: a solta fica sempre na tela, fora da gaveta, ou volta pra ela. Devolve se ficou fixada (nil se a
+    /// janela não está solta).
+    public mutating func togglePinned(_ window: WindowID) -> Bool? {
+        guard let i = floating.firstIndex(where: { $0.window == window }) else { return nil }
+        floating[i].pinned.toggle()
+        return floating[i].pinned
+    }
+
+    /// A gaveta: a solta sai da tela pela borda mais perto do meio dela (como na mesa) e estaciona com 1 pt, pra não ficar
+    /// no meio das janelas da fita, por trás da focada (o macOS não deixa pôr janela de outro app embaixo das outras; ver
+    /// docs/NOTES.md). Ficam na tela: a fixada, as da gaveta aberta pelo Option Tab e as do mesmo app da focada (`sameApp`:
+    /// o seletor de cores não some ao clicar no desenho).
+    public mutating func updateDrawer(at t: Double, sameApp: (WindowID, WindowID) -> Bool) {
+        let f = focusedWindow
+        for i in floating.indices {
+            let shown = floating[i].pinned || drawerOpen || f.map { sameApp($0, floating[i].window) } ?? true
+            floating[i].out.retarget(shown ? 0 : 1000, at: t)
+        }
     }
 
     /// Mostra a mesa ou traz a fita de volta. Sai pela esquerda quem tem o meio à esquerda do meio da tela.
@@ -778,12 +809,12 @@ public struct Layout {
                 out.append(WindowFrame(window: tile.window, rect: CGRect(x: sx.rounded(), y: y, width: w, height: r.maxY.rounded() - y)))
             }
         }
-        // As soltas não rolam com a fita. Com a mesa, cada uma sai inteira pela borda mais perto do meio dela; na troca de
-        // workspace, andam junto e estacionam como as colunas.
+        // As soltas não rolam com a fita. Com a mesa ou na gaveta, cada uma sai inteira pela borda mais perto do meio dela;
+        // na troca de workspace, andam junto e estacionam como as colunas.
         for f in floating {
-            let r = f.rect(at: t), w = r.width.rounded()
+            let r = f.rect(at: t), w = r.width.rounded(), q = max(p, min(1, max(0, f.out.value(at: t) / 1000)))
             let lo = bounds.minX - w + config.sliver, hi = bounds.maxX - config.sliver
-            let gone = r.midX < bounds.midX ? -p * max(0, r.maxX - bounds.minX - config.sliver) : p * max(0, bounds.maxX - config.sliver - r.minX)
+            let gone = r.midX < bounds.midX ? -q * max(0, r.maxX - bounds.minX - config.sliver) : q * max(0, bounds.maxX - config.sliver - r.minX)
             var sx = min(max(r.minX + gone, lo), hi)
             if away {
                 sx = shift.target < 0 ? lo : hi

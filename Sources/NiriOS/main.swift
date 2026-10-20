@@ -115,7 +115,7 @@ let names: [String: Action] = ["left": .focusLeft, "right": .focusRight, "grow":
                                "stack-left": .consumeOrExpelLeft, "stack-right": .consumeOrExpelRight,
                                "taller": .growHeight, "shorter": .shrinkHeight, "up": .focusUp, "down": .focusDown,
                                "full": .toggleFullWidth, "desktop": .toggleDesktop, "clipboard": .clipboard,
-                               "screenshot": .screenshot, "float": .toggleFloating, "layer": .focusFloating]
+                               "screenshot": .screenshot, "float": .toggleFloating, "layer": .focusFloating, "pin": .pinFloating]
 // Workspaces: ws:<nome> vai pra ele, move:<nome> manda a janela focada.
 // `wait`: um passo sem ação (ex.: o painel do Option+V aberto, que qualquer outro atalho fecha).
 dev.script = (value("--script") ?? "").split(separator: ",").compactMap { (s: Substring) -> Action?? in

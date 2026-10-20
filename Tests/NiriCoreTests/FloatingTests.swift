@@ -158,3 +158,31 @@ private func parked(_ r: CGRect) -> Bool { r.minX == bounds.maxX - 1 || r.maxX =
     w.setNames(["1"], at: 0)
     #expect(w.index(of: 10) == 0 && w[0].isFloating(10))
 }
+
+/// A gaveta: com o foco na fita, a solta de outro app sai pela borda mais perto do meio dela e estaciona com 1 pt; a do
+/// mesmo app da focada e a fixada ficam. O Option Tab abre a gaveta (todas na tela) e voltar pra fita fecha.
+@Test func drawerKeepsOnlyPinnedAndSameAppFloatingWhileTheStripIsFocused() {
+    var l = makeLayout(2)
+    let app: [WindowID: String] = [1: "a", 2: "b", 10: "c", 11: "a"]
+    func update() { l.updateDrawer(at: 0) { app[$0] == app[$1] } }
+    let left = CGRect(x: 100, y: 200, width: 400, height: 300), right = CGRect(x: 1100, y: 200, width: 400, height: 300)
+    l.addFloating(10, frame: left, focus: false)
+    l.addFloating(11, frame: right, focus: false)
+    update()
+    var f = settle(&l)
+    #expect(rect(f, 10).maxX == bounds.minX + 1 && rect(f, 11) == right)  // a 1 (app a) focada: a 11 fica
+    _ = l.toggleFloatingFocus()
+    update()
+    f = settle(&l)
+    #expect(l.drawerOpen && rect(f, 10) == left && rect(f, 11) == right)
+    _ = l.toggleFloatingFocus()
+    update()
+    #expect(!l.drawerOpen && rect(settle(&l), 10).maxX == bounds.minX + 1)
+    #expect(l.togglePinned(10) == true)
+    update()
+    #expect(rect(settle(&l), 10) == left)
+    _ = l.focusNeighbor(1, at: 0)  // a 2, de outro app: a 11 vai pra gaveta, a fixada fica
+    update()
+    f = settle(&l)
+    #expect(rect(f, 10) == left && rect(f, 11).minX == bounds.maxX - 1)
+}

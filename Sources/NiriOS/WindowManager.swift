@@ -45,7 +45,7 @@ final class WindowManager: NSObject {
         var workspace: String
         var left: CGWindowID?, right: CGWindowID?, column: Column?
         var stack: (sibling: CGWindowID, above: Bool)?
-        var floating: CGRect?
+        var floating: CGRect?, pinned = false
     }
     private var away: [CGWindowID: Away] = [:]
     /// Janelas de fora da fita que a pessoa mandou pra ela (Option Shift F), esperando a leitura do app delas (ver `sync`).
@@ -318,10 +318,10 @@ final class WindowManager: NSObject {
         return main || w.closable ? .float : nil
     }
 
-    /// A regra do app e se ele é um processo auxiliar (sem Dock).
+    /// A regra do app e se ele é um processo auxiliar (sem Dock, aberto por um app normal; ver `owner`).
     private func traits(_ pid: pid_t) -> (rule: WindowRule?, helper: Bool) {
-        let app = NSRunningApplication(processIdentifier: pid)
-        return (app.flatMap(rule(for:)), app.map { $0.activationPolicy != .regular } ?? false)
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return (nil, false) }
+        return (rule(for: app), Self.owner(of: app).processIdentifier != pid)
     }
 
     /// As soltas de todos os workspaces.
@@ -388,7 +388,7 @@ final class WindowManager: NSObject {
             tracked[w.id] = (pid, w.element)
             let k = c.workspace.flatMap(workspaces.index(named:)) ?? workspace(forApp: pid) ?? 0
             if let f = c.floating, f.count == 4 {
-                workspaces[k].addFloating(w.id, frame: CGRect(x: f[0], y: f[1], width: f[2], height: f[3]), focus: false)
+                workspaces[k].addFloating(w.id, frame: CGRect(x: f[0], y: f[1], width: f[2], height: f[3]), focus: false, pinned: c.pinned == true)
                 restored.insert(w.id)
                 continue
             }
@@ -527,13 +527,13 @@ final class WindowManager: NSObject {
             // Ainda na lista do app (tela cheia, minimizada, app escondido) ou escondida no X: guarda onde estava pra
             // volta, como a minimizada.
             let k = workspaces.index(of: id), cols = k.map { workspaces[$0].columns } ?? [], i = k.flatMap { workspaces[$0].index(of: id) }
-            let loose = k.flatMap { workspaces[$0].floating.first { $0.window == id }?.frame }
+            let loose = k.flatMap { workspaces[$0].floating.first { $0.window == id } }
             if k == workspaces.active { lastVanish = now }
             tracked[id] = nil
             let column = workspaces.remove(id, at: now)
             if listed.contains(id) || hidden.contains(id), let k {
                 if let loose {
-                    away[id] = Away(pid: pid, workspace: workspaces.names[k], floating: loose)
+                    away[id] = Away(pid: pid, workspace: workspaces.names[k], floating: loose.frame, pinned: loose.pinned)
                 } else if let i, let column {
                     let mates = cols[i].windows, r = mates.firstIndex(of: id)!
                     away[id] = Away(pid: pid, workspace: workspaces.names[k], left: i > 0 ? cols[i - 1].windows.first : nil,
@@ -563,7 +563,7 @@ final class WindowManager: NSObject {
             let k = asked || dialog ? workspaces.active : back.flatMap { workspaces.index(named: $0.workspace) } ?? home ?? workspaces.active
             let focus = asked || isFront || result.focused == w.id
             if let r = back?.floating ?? (back == nil && !asked && place(w) == .float ? w.frame : nil) {
-                workspaces[k].addFloating(w.id, frame: r, focus: focus)
+                workspaces[k].addFloating(w.id, frame: r, focus: focus, pinned: back?.pinned ?? false)
             } else if let back, let column = back.column {
                 let stacked = back.stack.map { workspaces[k].stack(column, with: $0.sibling, above: $0.above, focus: focus, at: now) } ?? false
                 let position = back.left.flatMap { workspaces[k].index(of: $0) }.map { $0 + 1 } ?? back.right.flatMap { workspaces[k].index(of: $0) }
@@ -699,13 +699,15 @@ final class WindowManager: NSObject {
         }
         switch action {
         case .focusLeft, .focusRight:
-            // Só rola; o app onde a fita parar é ativado no fim (ver `deferFocus`).
+            // Só rola; o app onde a fita parar é ativado no fim (ver `deferFocus`). Saindo de uma solta, a fita não rola:
+            // o foco vai na hora (ver `.focusFloating`).
+            let fromFloating = layout.floatingFocused
             guard let id = layout.focusNeighbor(action == .focusLeft ? -1 : 1, at: now) else {
                 if verbose { log("ação \(action): já está na ponta da fita") }
                 return
             }
             if verbose, let t = tracked[id] { log("ação \(action): foco em \(workers[t.pid]?.name ?? "?") (janela \(id))") }
-            deferFocus(id)
+            if fromFloating { requestFocus(id) } else { deferFocus(id) }
         case .focusUp, .focusDown:
             guard let id = layout.focusInColumn(action == .focusUp ? -1 : 1) else {
                 if verbose { log("ação \(action): já está na ponta da coluna") }
@@ -741,9 +743,14 @@ final class WindowManager: NSObject {
         case .toggleFloating:
             toggleFloating(at: now)
         case .focusFloating:
+            // Na hora, e não no fim da animação: a fita não rola, só a solta anda, e ela tem que subir antes de entrar
+            // (esperando, ela entrava por baixo da janela da fita e pulava pra frente no fim; visto no uso em 2026-10-20).
             guard let id = layout.toggleFloatingFocus() else { return }
             if verbose { log("ação \(action): foco em \(layout.floatingFocused ? "solta" : "fita") (janela \(id))") }
-            deferFocus(id)
+            requestFocus(id)
+        case .pinFloating:
+            guard layout.floatingFocused, let id = layout.focusedWindow, let pinned = layout.togglePinned(id) else { return }
+            if verbose { log("ação \(action): janela \(id) \(pinned ? "fixada na tela" : "volta pra gaveta")") }
         case .moveToWorkspace(let name):
             guard let k = workspaces.index(named: name), k != workspaces.active, let id = layout.focusedWindow else { return }
             withGlass(at: now) { workspaces.move(id, to: k, at: now) }  // empilhada, as da coluna crescem
@@ -1266,8 +1273,10 @@ final class WindowManager: NSObject {
             if let f, borderSpace?.window != f { borderSpace = (f, Private.isOnActiveSpace(f)) }
             let keyboard = NSWorkspace.shared.frontmostApplication.flatMap { appFocus[$0.processIdentifier] }
             let coming = deferredFocus != nil || pendingFocus.map { now - $0.time < 0.6 } == true
+            // Com solta no workspace, só quando o app confirma o foco: aí a janela já subiu. Antes, a borda aparecia por
+            // cima da janela que ainda cobria a focada (visto no uso em 2026-10-20).
             let show = f != nil && borderSpace?.onSpace != false && !layout.showsDesktop && global == nil
-                && (dev.pid != nil || coming || keyboard == f)
+                && (dev.pid != nil || keyboard == f || coming && layout.floating.isEmpty)
             border.follow(show ? f : nil)
         }
         ghost?.focus(f)
@@ -1285,7 +1294,11 @@ final class WindowManager: NSObject {
         let stacked = !layout.floatingFocused && layout.focusedIndex.map { layout.columns[$0].tiles.count > 1 } ?? false
         var idle: Set<Action> = stacked ? [] : [.focusUp, .focusDown]
         if layout.floating.isEmpty { idle.insert(.focusFloating) }
+        if !layout.floatingFocused { idle.insert(.pinFloating) }
         if hotkeys.idle != idle { hotkeys.idle = idle }
+        // A gaveta das soltas segue o foco (ver `Layout.updateDrawer`).
+        let owners = tracked
+        layout.updateDrawer(at: CACurrentMediaTime()) { owners[$0]?.pid == owners[$1]?.pid }
         updateBorder()
         guard let link else { return }
         if link.isPaused {
@@ -1510,8 +1523,8 @@ final class WindowManager: NSObject {
         var workspace: String?
         /// Na mesma coluna da anterior (embaixo dela), a parte dela da altura e a altura mínima.
         var stacked: Bool?, share: Double?, minHeight: Double?
-        /// Solta: x, y, largura e altura. As soltas vêm depois de todas as colunas.
-        var floating: [Double]?
+        /// Solta: x, y, largura e altura, e se está fixada fora da gaveta. As soltas vêm depois de todas as colunas.
+        var floating: [Double]?, pinned: Bool?
     }
 
     private static let statePath = FileManager.default.homeDirectoryForCurrentUser
@@ -1540,7 +1553,7 @@ final class WindowManager: NSObject {
         } + (0..<workspaces.count).flatMap { k in
             workspaces[k].floating.map { f in
                 SavedColumn(window: f.window, proportion: 0, saved: nil, minWidth: 0, workspace: workspaces.names[k],
-                            floating: [f.frame.minX, f.frame.minY, f.frame.width, f.frame.height])
+                            floating: [f.frame.minX, f.frame.minY, f.frame.width, f.frame.height], pinned: f.pinned ? true : nil)
             }
         }
         let write = {

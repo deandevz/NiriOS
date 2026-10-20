@@ -10,6 +10,8 @@ enum Action: Hashable {
     case toggleFloating
     /// O foco vai da fita pra solta de cima e volta (ver `Layout.toggleFloatingFocus`).
     case focusFloating
+    /// Fixa a solta focada na tela, fora da gaveta, ou devolve (ver `Layout.togglePinned`).
+    case pinFloating
     /// Abre e fecha o histórico do que foi copiado (ver `Clipboard`).
     case clipboard
     /// Congela a tela pra escolher a área do print (ver `Screenshot`). De novo, fecha.
@@ -20,7 +22,7 @@ enum Action: Hashable {
     /// As ações de "shortcuts", na ordem do painel.
     static let allCases: [Action] = [.grow, .shrink, .growHeight, .shrinkHeight, .focusLeft, .focusRight, .focusUp, .focusDown,
                                      .moveColumnLeft, .moveColumnRight, .consumeOrExpelLeft, .consumeOrExpelRight, .toggleFullWidth, .toggleDesktop,
-                                     .toggleFloating, .focusFloating, .clipboard, .screenshot]
+                                     .toggleFloating, .focusFloating, .pinFloating, .clipboard, .screenshot]
     var rawValue: String { String(describing: self) }
     init?(rawValue: String) {
         guard let a = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
